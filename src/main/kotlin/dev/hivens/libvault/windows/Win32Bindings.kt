@@ -72,16 +72,20 @@ internal class Win32Bindings private constructor(
             val credAddress = outPtr.get(ValueLayout.ADDRESS, 0)
             if (credAddress.address() == 0L) return@use null
 
-            val cred = credAddress.reinterpret(CREDENTIAL_LAYOUT.byteSize())
-            val blobSize = cred.get(ValueLayout.JAVA_INT, 32)
-            val blobPtr = cred.get(ValueLayout.ADDRESS, 40)
-            val value = if (blobSize > 0 && blobPtr.address() != 0L) {
-                blobPtr.reinterpret(blobSize.toLong()).toArray(ValueLayout.JAVA_BYTE)
-            } else {
-                ByteArray(0)
+            // CredReadW allocated the buffer; CredFree must run even if the
+            // blob extraction below throws.
+            try {
+                val cred = credAddress.reinterpret(CREDENTIAL_LAYOUT.byteSize())
+                val blobSize = cred.get(ValueLayout.JAVA_INT, 32)
+                val blobPtr = cred.get(ValueLayout.ADDRESS, 40)
+                if (blobSize > 0 && blobPtr.address() != 0L) {
+                    blobPtr.reinterpret(blobSize.toLong()).toArray(ValueLayout.JAVA_BYTE)
+                } else {
+                    ByteArray(0)
+                }
+            } finally {
+                credFree.invokeExact(credAddress) as Unit
             }
-            credFree.invokeExact(credAddress) as Unit
-            value
         }.getOrNull()
     }
 

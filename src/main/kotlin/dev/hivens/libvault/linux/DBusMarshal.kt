@@ -19,6 +19,16 @@ import java.lang.foreign.ValueLayout
 private val LAYOUT_BYTE = ValueLayout.JAVA_BYTE
 private val LAYOUT_ADDR = ValueLayout.ADDRESS
 
+/**
+ * libdbus append/container calls return `dbus_bool_t`; FALSE means out of
+ * memory, after which the message is half-built and further iter calls are
+ * undefined. Throw instead of continuing -- [SecretServiceVault]'s `transact`
+ * runs inside the bounded executor, so the throw degrades the op to false/null.
+ */
+private fun dbusOk(result: Int, op: String) {
+    if (result == 0) throw IllegalStateException("libdbus $op returned FALSE (out of memory)")
+}
+
 internal fun DBusBindings.scratchIter(call: Arena): MemorySegment = call.allocate(messageIterLayout)
 
 internal fun DBusBindings.argType(iter: MemorySegment): Byte =
@@ -32,11 +42,11 @@ internal fun DBusBindings.recurse(parent: MemorySegment, sub: MemorySegment) {
 }
 
 internal fun DBusBindings.openContainer(parent: MemorySegment, type: Byte, signature: MemorySegment, sub: MemorySegment) {
-    handle("dbus_message_iter_open_container").invokeExact(parent, type.toInt(), signature, sub) as Int
+    dbusOk(handle("dbus_message_iter_open_container").invokeExact(parent, type.toInt(), signature, sub) as Int, "open_container")
 }
 
 internal fun DBusBindings.closeContainer(parent: MemorySegment, sub: MemorySegment) {
-    handle("dbus_message_iter_close_container").invokeExact(parent, sub) as Int
+    dbusOk(handle("dbus_message_iter_close_container").invokeExact(parent, sub) as Int, "close_container")
 }
 
 // ── Basic appends ────────────────────────────────────────────────────────────
@@ -46,14 +56,14 @@ internal fun DBusBindings.appendText(call: Arena, iter: MemorySegment, type: Byt
     val strSeg = call.allocateUtf8(value)
     val ptrBuf = call.allocate(LAYOUT_ADDR)
     ptrBuf.set(LAYOUT_ADDR, 0, strSeg)
-    handle("dbus_message_iter_append_basic").invokeExact(iter, type.toInt(), ptrBuf) as Int
+    dbusOk(handle("dbus_message_iter_append_basic").invokeExact(iter, type.toInt(), ptrBuf) as Int, "append_basic")
 }
 
 internal fun DBusBindings.appendBool(call: Arena, iter: MemorySegment, value: Boolean) {
     // dbus_bool_t is 4 bytes on the wire, not 1.
     val buf = call.allocate(ValueLayout.JAVA_INT)
     buf.set(ValueLayout.JAVA_INT, 0, if (value) 1 else 0)
-    handle("dbus_message_iter_append_basic").invokeExact(iter, DBusBindings.DBUS_TYPE_BOOLEAN.toInt(), buf) as Int
+    dbusOk(handle("dbus_message_iter_append_basic").invokeExact(iter, DBusBindings.DBUS_TYPE_BOOLEAN.toInt(), buf) as Int, "append_basic")
 }
 
 internal fun DBusBindings.appendByteArray(call: Arena, iter: MemorySegment, bytes: ByteArray) {
@@ -63,7 +73,7 @@ internal fun DBusBindings.appendByteArray(call: Arena, iter: MemorySegment, byte
     val byteBuf = call.allocate(LAYOUT_BYTE)
     for (b in bytes) {
         byteBuf.set(LAYOUT_BYTE, 0, b)
-        handle("dbus_message_iter_append_basic").invokeExact(array, DBusBindings.DBUS_TYPE_BYTE.toInt(), byteBuf) as Int
+        dbusOk(handle("dbus_message_iter_append_basic").invokeExact(array, DBusBindings.DBUS_TYPE_BYTE.toInt(), byteBuf) as Int, "append_basic")
     }
     closeContainer(iter, array)
 }

@@ -51,8 +51,8 @@ internal class SecurityBindings private constructor(
 ) {
 
     fun store(service: String, account: String, secret: ByteArray): Boolean = Arena.ofConfined().use { call ->
-        runCatching {
-            val refs = mutableListOf<MemorySegment>()
+        val refs = mutableListOf<MemorySegment>()
+        try {
             val serviceCF = cfString(call, service).also { refs += it }
             val accountCF = cfString(call, account).also { refs += it }
             val dataCF = cfData(call, secret).also { refs += it }
@@ -73,14 +73,17 @@ internal class SecurityBindings private constructor(
                 val updates = cfDictionary(call, arrayOf(kSecValueData), arrayOf(dataCF)).also { refs += it }
                 status = secItemUpdate.invokeExact(locator, updates) as Int
             }
-            releaseAll(refs)
             status == ERR_SUCCESS
-        }.getOrDefault(false)
+        } catch (t: Throwable) {
+            false
+        } finally {
+            releaseAll(refs)
+        }
     }
 
     fun retrieve(service: String, account: String): ByteArray? = Arena.ofConfined().use { call ->
-        runCatching {
-            val refs = mutableListOf<MemorySegment>()
+        val refs = mutableListOf<MemorySegment>()
+        try {
             val serviceCF = cfString(call, service).also { refs += it }
             val accountCF = cfString(call, account).also { refs += it }
             val query = cfDictionary(
@@ -91,31 +94,28 @@ internal class SecurityBindings private constructor(
 
             val outPtr = call.allocate(ValueLayout.ADDRESS)
             val status = secItemCopyMatching.invokeExact(query, outPtr) as Int
-            if (status != ERR_SUCCESS) {
-                releaseAll(refs)
-                return@use null
-            }
+            if (status != ERR_SUCCESS) return@use null
             val cfDataRef = outPtr.get(ValueLayout.ADDRESS, 0)
-            if (cfDataRef.address() == 0L) {
-                releaseAll(refs)
-                return@use null
-            }
+            if (cfDataRef.address() == 0L) return@use null
+            // CopyMatching's result is caller-owned -- track it for release too.
+            refs += cfDataRef
             val length = cfDataGetLength.invokeExact(cfDataRef) as Long
             val ptr = cfDataGetBytePtr.invokeExact(cfDataRef) as MemorySegment
-            val bytes = if (length > 0 && ptr.address() != 0L) {
+            if (length > 0 && ptr.address() != 0L) {
                 ptr.reinterpret(length).toArray(ValueLayout.JAVA_BYTE)
             } else {
                 ByteArray(0)
             }
-            cfRelease.invokeExact(cfDataRef) as Unit
+        } catch (t: Throwable) {
+            null
+        } finally {
             releaseAll(refs)
-            bytes
-        }.getOrNull()
+        }
     }
 
     fun delete(service: String, account: String): Boolean = Arena.ofConfined().use { call ->
-        runCatching {
-            val refs = mutableListOf<MemorySegment>()
+        val refs = mutableListOf<MemorySegment>()
+        try {
             val serviceCF = cfString(call, service).also { refs += it }
             val accountCF = cfString(call, account).also { refs += it }
             val query = cfDictionary(
@@ -124,10 +124,13 @@ internal class SecurityBindings private constructor(
                 arrayOf(kSecClassGenericPassword, serviceCF, accountCF),
             ).also { refs += it }
             val status = secItemDelete.invokeExact(query) as Int
-            releaseAll(refs)
             // Idempotent: nothing to delete is success.
             status == ERR_SUCCESS || status == ERR_ITEM_NOT_FOUND
-        }.getOrDefault(false)
+        } catch (t: Throwable) {
+            false
+        } finally {
+            releaseAll(refs)
+        }
     }
 
     fun close() {

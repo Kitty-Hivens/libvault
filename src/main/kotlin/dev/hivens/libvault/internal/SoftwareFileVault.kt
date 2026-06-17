@@ -44,7 +44,7 @@ import javax.crypto.spec.SecretKeySpec
 internal class SoftwareFileVault private constructor(
     private val path: Path,
     private val configKdfId: Int,
-    private val passphrase: CharArray?,
+    private var passphrase: CharArray?,
 ) : SecretVault {
 
     override val tier: VaultTier = VaultTier.SoftwareFile
@@ -53,6 +53,7 @@ internal class SoftwareFileVault private constructor(
     private val log = LoggerFactory.getLogger(SoftwareFileVault::class.java)
     private val lock = Any()
     private val random = SecureRandom()
+    private var closed = false
 
     private var salt: ByteArray? = null
     private var storedKdfId: Int = configKdfId
@@ -67,6 +68,7 @@ internal class SoftwareFileVault private constructor(
     override fun store(key: String, secret: ByteArray): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) {
+            if (closed) return false
             ensureWritableKey()
             val k = this.key ?: return false
             val (nonce, ct) = encrypt(k, secret, key.toByteArray(StandardCharsets.UTF_8))
@@ -78,7 +80,7 @@ internal class SoftwareFileVault private constructor(
     override fun retrieve(key: String): ByteArray? {
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) {
-            if (!verifierOk) return null
+            if (closed || !verifierOk) return null
             val k = this.key ?: return null
             val record = records[key] ?: return null
             return decrypt(k, record.nonce, record.ct, key.toByteArray(StandardCharsets.UTF_8))
@@ -88,6 +90,12 @@ internal class SoftwareFileVault private constructor(
     override fun delete(key: String): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) {
+            if (closed) return false
+            // Without a matching key we have no right to rewrite the file: the
+            // records came from parse() and belong to whoever holds the real
+            // key. Mirror retrieve/contains -- report the (inaccessible) key as
+            // already gone, touch nothing on disk.
+            if (!verifierOk) return true
             val removed = records.remove(key) ?: return true // idempotent: nothing to delete
             removed.ct.fill(0)
             return if (records.isEmpty() && salt == null) true else persist()
@@ -96,12 +104,14 @@ internal class SoftwareFileVault private constructor(
 
     override fun contains(key: String): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
-        synchronized(lock) { return verifierOk && records.containsKey(key) }
+        synchronized(lock) { return !closed && verifierOk && records.containsKey(key) }
     }
 
     override fun close() {
         synchronized(lock) {
+            closed = true
             passphrase?.fill(' ')
+            passphrase = null
             key = null
             records.clear()
         }

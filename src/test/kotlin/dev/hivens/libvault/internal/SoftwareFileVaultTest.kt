@@ -117,4 +117,34 @@ class SoftwareFileVaultTest {
             vault.retrieve("blob")!!.toList() shouldBe blob.toList()
         }
     }
+
+    @Test
+    fun `delete under a wrong passphrase cannot rewrite the file`(@TempDir dir: Path) {
+        val path = dir.resolve("vault.bin")
+        passphrase(path, "right").use { it.store("k", "secret".toByteArray()) }
+        // Wrong key: can't read, and must not be able to delete/persist either.
+        passphrase(path, "wrong").use { vault ->
+            vault.delete("k") shouldBe true // reported gone (no-op), file left untouched
+        }
+        // The rightful holder still sees the entry intact.
+        passphrase(path, "right").use { vault ->
+            vault.retrieve("k")!!.decodeToString() shouldBe "secret"
+        }
+    }
+
+    @Test
+    fun `operations after close are inert and do not corrupt the file`(@TempDir dir: Path) {
+        val path = dir.resolve("vault.bin")
+        val vault = passphrase(path, "pw")
+        vault.store("k", "v".toByteArray()) shouldBe true
+        vault.close()
+        vault.store("k2", "new".toByteArray()) shouldBe false // no silent reinit with a blanked passphrase
+        vault.retrieve("k") shouldBe null
+        vault.contains("k") shouldBe false
+        // Reopen with the real key: original entry intact, the post-close write never landed.
+        passphrase(path, "pw").use { v ->
+            v.retrieve("k")!!.decodeToString() shouldBe "v"
+            v.retrieve("k2") shouldBe null
+        }
+    }
 }

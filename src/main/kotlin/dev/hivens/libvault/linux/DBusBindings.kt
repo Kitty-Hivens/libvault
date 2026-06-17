@@ -135,8 +135,14 @@ internal class DBusBindings private constructor(
      * sizes in the public ABI. Real struct is 72 bytes on x86_64 / aarch64; a
      * 64-byte buffer let libdbus write 8 bytes past it on every iter call.
      * Reserve 80.
+     *
+     * Backed by JAVA_LONG, not JAVA_BYTE: the struct holds pointers and must be
+     * 8-byte aligned. A `sequenceLayout(80, JAVA_BYTE)` has byteAlignment() == 1,
+     * so `Arena.allocate` would only guarantee 1-byte alignment -- it happens to
+     * survive on x86_64 glibc (malloc returns 16-byte-aligned) but is undefined
+     * on strict-alignment aarch64. 10 longs = 80 bytes, alignment 8.
      */
-    val messageIterLayout: MemoryLayout = MemoryLayout.sequenceLayout(80, ValueLayout.JAVA_BYTE)
+    val messageIterLayout: MemoryLayout = MemoryLayout.sequenceLayout(10, ValueLayout.JAVA_LONG)
 }
 
 /** Allocate a UTF-8 NUL-terminated string in this arena. */
