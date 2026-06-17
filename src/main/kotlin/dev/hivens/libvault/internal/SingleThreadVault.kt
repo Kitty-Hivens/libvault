@@ -77,6 +77,10 @@ internal abstract class SingleThreadVault(
         } catch (e: TimeoutException) {
             log.warn("{} op exceeded {} ms -- degrading to fallback value", backend, opTimeoutMs)
             default
+        } catch (e: InterruptedException) {
+            // Preserve the interrupt for the caller instead of silently eating it.
+            Thread.currentThread().interrupt()
+            default
         } catch (e: Exception) {
             log.warn("{} op failed: {}", backend, e.message ?: e.javaClass.simpleName)
             default

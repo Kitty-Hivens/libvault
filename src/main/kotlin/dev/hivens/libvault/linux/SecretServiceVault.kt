@@ -28,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -163,8 +164,14 @@ internal class SecretServiceVault private constructor(
         if (!open.get()) return default
         val future = CompletableFuture<T>()
         tasks.add(Runnable { future.complete(runCatching { op() }.getOrElse { log.warn("op failed: {}", it.message); default }) })
-        return runCatching { future.get(timeoutMs, TimeUnit.MILLISECONDS) }.getOrElse {
-            log.warn("secret-service op exceeded {} ms -- degrading", timeoutMs)
+        return runCatching { future.get(timeoutMs, TimeUnit.MILLISECONDS) }.getOrElse { e ->
+            // Restore the interrupt flag so a cancelled caller still sees it.
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            if (e is TimeoutException) {
+                log.warn("secret-service op exceeded {} ms -- degrading", timeoutMs)
+            } else {
+                log.warn("secret-service op did not complete: {}", e.message ?: e.javaClass.simpleName)
+            }
             default
         }
     }
@@ -172,12 +179,21 @@ internal class SecretServiceVault private constructor(
     // ── Dispatch thread ───────────────────────────────────────────────────────
 
     private fun run() {
-        doSetup()
-        if (!open.get()) {
+        try {
+            doSetup()
+            if (!open.get()) {
+                teardown()
+                return
+            }
+            dispatchLoop()
+        } catch (t: Throwable) {
+            // An unexpected throw on the dispatch thread (e.g. a Panama
+            // WrongMethodType, OOM) must still complete setup and free the arena,
+            // or create() waits the full budget and the libdbus handle leaks.
+            log.warn("secret-service dispatch thread crashed: {}", t.message ?: t.javaClass.simpleName)
+            runCatching { failSetup(VaultAvailability.ServiceUnavailable) }
             teardown()
-            return
         }
-        dispatchLoop()
     }
 
     private fun doSetup() {
@@ -411,9 +427,12 @@ internal class SecretServiceVault private constructor(
         },
     )
 
-    fun collectionLabels(): List<String> {
-        val collections = getObjectPathsProperty(SERVICE_PATH, IFACE_SERVICE, "Collections") ?: return emptyList()
-        return collections.mapNotNull { getStringProperty(it, IFACE_COLLECTION, "Label") }
+    fun collectionLabels(): List<String> = bounded(emptyList<String>(), replyTimeoutMs.toLong()) {
+        // MUST run on the dispatch thread: it touches `conn`, which the loop is
+        // concurrently draining. Every other op already routes through bounded().
+        val collections = getObjectPathsProperty(SERVICE_PATH, IFACE_SERVICE, "Collections")
+            ?: return@bounded emptyList()
+        collections.mapNotNull { getStringProperty(it, IFACE_COLLECTION, "Label") }
     }
 
     // ── Unlock prompt pump (runs on the dispatch thread) ──────────────────────
