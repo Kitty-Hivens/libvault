@@ -1,0 +1,42 @@
+[versions]
+# Pinned to the Nexira launcher's Kotlin so the cross-project Panama bindings
+# stay binary-compatible. 2.4.1 can be substituted once it is on the plugin
+# portal; the build does not depend on anything 2.4.1-only.
+kotlin = "2.4.0"
+slf4j  = "2.0.18"
+
+# Java 22 is the floor: that's where java.lang.foreign (Project Panama) was
+# finalized as JEP 454. Earlier LTSes (17, 21) still have FFM in preview
+# requiring --enable-preview, which a library shouldn't impose on consumers.
+javaTarget = "22"
+
+# Argon2id for the Passphrase key-derivation tier. BouncyCastle's provider is
+# PURE JAVA -- no bundled native .so/.dll/.dylib (unlike argon2-jvm), so the
+# jar stays free of native binaries and there is no second FFI binding beyond
+# Panama. Used only by the software-file fallback; the OS-keyring tiers never
+# touch it. VERIFY the latest at search.maven.org/artifact/org.bouncycastle/
+# bcprov-jdk18on and bump -- this is a starting point, not necessarily newest.
+bouncycastle = "1.84"
+
+# Test stack -- light. JUnit 5 + Kotest assertions for readable test code.
+junit  = "5.11.4"
+kotest = "5.9.1"
+
+# Maven Central publishing (signing + Central Portal upload). Pinned here;
+# VERIFY the latest at plugins.gradle.org/plugin/com.vanniktech.maven.publish
+# and bump -- this is a starting point, not necessarily the newest.
+mavenPublish = "0.36.0"
+
+[libraries]
+slf4j-api    = { group = "org.slf4j", name = "slf4j-api",    version.ref = "slf4j" }
+slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4j" }
+
+bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
+
+junit-jupiter           = { group = "org.junit.jupiter", name = "junit-jupiter",           version.ref = "junit" }
+junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher" }
+kotest-assertions       = { group = "io.kotest", name = "kotest-assertions-core",          version.ref = "kotest" }
+
+[plugins]
+kotlin-jvm   = { id = "org.jetbrains.kotlin.jvm",       version.ref = "kotlin" }
+mavenPublish = { id = "com.vanniktech.maven.publish",   version.ref = "mavenPublish" }
