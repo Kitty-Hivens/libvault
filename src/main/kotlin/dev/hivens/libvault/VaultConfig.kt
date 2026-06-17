@@ -54,10 +54,42 @@ public data class VaultConfig(
      * listed here. The default tries the OS keyring, then the software file.
      */
     public val preferredTiers: List<VaultTier> = listOf(VaultTier.OsKeyring, VaultTier.SoftwareFile),
+
+    /**
+     * Ceiling, in milliseconds, on an interactive [UnlockableVault.unlock] -- the
+     * one operation allowed to block for tens of seconds while a human answers a
+     * system prompt. Generous on purpose. Used ONLY by `unlock()`; [Vault.open]
+     * and the other ops never use it.
+     */
+    public val unlockTimeoutMs: Long = 30_000,
+
+    /**
+     * When a newly stored secret becomes readable. Maps to `kSecAttrAccessible*`
+     * on macOS; ignored on Linux/Windows (their keyring lock governs readability).
+     */
+    public val accessibility: Accessibility = Accessibility.WhenUnlocked,
+
+    /**
+     * Optional named collection to target instead of the user's default. On Linux
+     * this is a real, separately-lockable Secret Service collection (created if
+     * absent). On Windows/macOS there is no per-collection store, so the name
+     * becomes a logical sub-namespace folded into the entry key -- NOT a
+     * separately-lockable container. Null uses the platform default store.
+     */
+    public val collection: String? = null,
+
+    /**
+     * Whether [Vault.open] may interactively unlock a locked OS keyring. Default
+     * [UnlockPolicy.Never] keeps `open()` non-interactive; [UnlockPolicy.IfLocked]
+     * opts a single open into surfacing the system prompt.
+     */
+    public val unlockPolicy: UnlockPolicy = UnlockPolicy.Never,
 ) {
     init {
         require(namespace.isNotBlank()) { "namespace must be non-blank" }
         require(probeTimeoutMs > 0) { "probeTimeoutMs must be positive" }
         require(opTimeoutMs > 0) { "opTimeoutMs must be positive" }
+        require(unlockTimeoutMs > 0) { "unlockTimeoutMs must be positive" }
+        require(collection == null || collection.isNotBlank()) { "collection must be non-blank when set" }
     }
 }

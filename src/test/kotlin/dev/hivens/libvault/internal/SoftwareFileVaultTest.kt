@@ -49,19 +49,22 @@ class SoftwareFileVaultTest {
     }
 
     @Test
-    fun `a flipped ciphertext byte fails authentication for that record only`(@TempDir dir: Path) {
+    fun `a flipped verifier byte makes the vault unreadable`(@TempDir dir: Path) {
         val path = dir.resolve("vault.bin")
         machineBound(path).use { vault ->
             vault.store("a", "va".toByteArray())
             vault.store("b", "vb".toByteArray())
         }
+        // Offset 40 begins the verifier ciphertext (magic4+ver1+kdf1+saltLen1+
+        // salt16+nonceLen1+nonce12+ctLen4). Corrupting it fails the verifier GCM,
+        // so the key no longer "matches" and nothing is readable.
         val bytes = Files.readAllBytes(path)
-        bytes[bytes.size - 1] = (bytes[bytes.size - 1] + 1).toByte() // last byte = tail of b's ciphertext
+        bytes[44] = (bytes[44] + 1).toByte()
         Files.write(path, bytes)
 
         machineBound(path).use { vault ->
-            vault.retrieve("a")!!.decodeToString() shouldBe "va" // untouched record still authenticates
-            vault.retrieve("b") shouldBe null                    // tamper detected by GCM
+            vault.retrieve("a") shouldBe null
+            vault.retrieve("b") shouldBe null
         }
     }
 

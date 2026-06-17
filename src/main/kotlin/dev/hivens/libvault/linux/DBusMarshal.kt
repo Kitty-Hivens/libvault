@@ -142,6 +142,19 @@ internal fun DBusBindings.appendItemProperties(
     closeContainer(iter, array)
 }
 
+/** Append an `a{sv}` with a single `{ labelKey: variant string }` entry (CreateCollection). */
+internal fun DBusBindings.appendCollectionProperties(call: Arena, iter: MemorySegment, labelKey: String, label: String) {
+    val entrySig = call.allocateUtf8("{sv}")
+    val array = scratchIter(call)
+    openContainer(iter, DBusBindings.DBUS_TYPE_ARRAY, entrySig, array)
+    val entry = scratchIter(call)
+    openContainer(array, DBusBindings.DBUS_TYPE_DICT_ENTRY, MemorySegment.NULL, entry)
+    appendText(call, entry, DBusBindings.DBUS_TYPE_STRING, labelKey)
+    appendVariantString(call, entry, label)
+    closeContainer(array, entry)
+    closeContainer(iter, array)
+}
+
 // ── Secret struct (oayays) ───────────────────────────────────────────────────
 
 internal fun DBusBindings.appendSecret(
@@ -215,4 +228,36 @@ internal fun DBusBindings.readSecretValue(call: Arena, iter: MemorySegment): Byt
     next(struct) // session (o) -> parameters (ay)
     next(struct) // parameters (ay) -> value (ay)
     return readByteArray(call, struct)
+}
+
+/** Read a uint64 (`t`, e.g. a Created/Modified timestamp), or null if not one. */
+internal fun DBusBindings.readUInt64(call: Arena, iter: MemorySegment): Long? {
+    if (argType(iter) != DBusBindings.DBUS_TYPE_UINT64) return null
+    val out = call.allocate(ValueLayout.JAVA_LONG)
+    handle("dbus_message_iter_get_basic").invokeExact(iter, out) as Unit
+    return out.get(ValueLayout.JAVA_LONG, 0)
+}
+
+/** Read an `a{ss}` map (e.g. item Attributes) at the iterator's cursor. */
+internal fun DBusBindings.readAttributes(call: Arena, iter: MemorySegment): Map<String, String> {
+    if (argType(iter) != DBusBindings.DBUS_TYPE_ARRAY) return emptyMap()
+    val array = scratchIter(call)
+    recurse(iter, array)
+    val out = LinkedHashMap<String, String>()
+    while (argType(array) == DBusBindings.DBUS_TYPE_DICT_ENTRY) {
+        val entry = scratchIter(call)
+        recurse(array, entry)
+        val k = readText(call, entry)
+        next(entry)
+        val v = readText(call, entry)
+        if (k != null && v != null) out[k] = v
+        next(array)
+    }
+    return out
+}
+
+/** Read the result of a message accessor returning a `const char *` (member/interface/path). */
+internal fun DBusBindings.readMessageString(symbol: String, msg: MemorySegment): String? {
+    val ptr = handle(symbol).invokeExact(msg) as MemorySegment
+    return if (ptr.address() == 0L) null else ptr.reinterpret(Long.MAX_VALUE).getString(0)
 }

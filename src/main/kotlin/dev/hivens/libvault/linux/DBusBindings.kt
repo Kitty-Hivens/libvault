@@ -29,10 +29,14 @@ internal class DBusBindings private constructor(
         /** Bus types from dbus/dbus-shared.h. */
         const val DBUS_BUS_SESSION: Int = 0
 
+        /** Message type from dbus/dbus-protocol.h. */
+        const val DBUS_MESSAGE_TYPE_SIGNAL: Int = 4
+
         /** Type signatures from dbus/dbus-protocol.h. Single-byte ASCII. */
         const val DBUS_TYPE_INVALID: Byte = 0
         const val DBUS_TYPE_BYTE: Byte = 'y'.code.toByte()
         const val DBUS_TYPE_BOOLEAN: Byte = 'b'.code.toByte()
+        const val DBUS_TYPE_UINT64: Byte = 't'.code.toByte()
         const val DBUS_TYPE_STRING: Byte = 's'.code.toByte()
         const val DBUS_TYPE_OBJECT_PATH: Byte = 'o'.code.toByte()
         const val DBUS_TYPE_ARRAY: Byte = 'a'.code.toByte()
@@ -56,14 +60,22 @@ internal class DBusBindings private constructor(
                 ValueLayout.ADDRESS,
                 listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS),
             ),
+            // Signal subscription + non-blocking receive (watch + unlock pump)
+            Triple("dbus_bus_add_match", null, listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)),
+            Triple("dbus_connection_read_write", ValueLayout.JAVA_INT, listOf(ValueLayout.ADDRESS, ValueLayout.JAVA_INT)),
+            Triple("dbus_connection_pop_message", ValueLayout.ADDRESS, listOf(ValueLayout.ADDRESS)),
 
-            // Message construction / teardown
+            // Message construction / teardown / inspection
             Triple(
                 "dbus_message_new_method_call",
                 ValueLayout.ADDRESS,
                 listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
             ),
             Triple("dbus_message_unref", null, listOf(ValueLayout.ADDRESS)),
+            Triple("dbus_message_get_type", ValueLayout.JAVA_INT, listOf(ValueLayout.ADDRESS)),
+            Triple("dbus_message_get_member", ValueLayout.ADDRESS, listOf(ValueLayout.ADDRESS)),
+            Triple("dbus_message_get_interface", ValueLayout.ADDRESS, listOf(ValueLayout.ADDRESS)),
+            Triple("dbus_message_get_path", ValueLayout.ADDRESS, listOf(ValueLayout.ADDRESS)),
 
             // Iterator API
             Triple("dbus_message_iter_init", ValueLayout.JAVA_INT, listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS)),

@@ -16,6 +16,23 @@ class VaultConfigTest {
     fun `non-positive timeouts are rejected`() {
         shouldThrow<IllegalArgumentException> { VaultConfig(namespace = "ns", probeTimeoutMs = 0) }
         shouldThrow<IllegalArgumentException> { VaultConfig(namespace = "ns", opTimeoutMs = -1) }
+        shouldThrow<IllegalArgumentException> { VaultConfig(namespace = "ns", unlockTimeoutMs = 0) }
+    }
+
+    @Test
+    fun `a blank collection is rejected, null is fine`() {
+        shouldThrow<IllegalArgumentException> { VaultConfig(namespace = "ns", collection = "  ") }
+        VaultConfig(namespace = "ns", collection = null).collection shouldBe null
+        VaultConfig(namespace = "ns", collection = "work").collection shouldBe "work"
+    }
+
+    @Test
+    fun `v0_2 fields default to the conservative case`() {
+        val config = VaultConfig(namespace = "ns")
+        config.unlockTimeoutMs shouldBe 30_000
+        config.accessibility shouldBe Accessibility.WhenUnlocked
+        config.collection shouldBe null
+        config.unlockPolicy shouldBe UnlockPolicy.Never
     }
 
     @Test

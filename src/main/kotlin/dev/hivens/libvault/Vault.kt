@@ -28,4 +28,20 @@ public object Vault {
      * [VaultConfig] already raised at construction.
      */
     public fun open(config: VaultConfig): SecretVault = VaultSelector.select(config)
+
+    /**
+     * Classify each [VaultConfig.preferredTiers] entry without opening a live
+     * vault. Lets a caller tell a locked keyring ([VaultAvailability.Locked] --
+     * offer an unlock) from an absent one ([VaultAvailability.ServiceUnavailable]
+     * -- don't). Non-interactive: never prompts, even if the config opts into
+     * [UnlockPolicy.IfLocked]. Bounded by [VaultConfig.probeTimeoutMs] per tier.
+     */
+    public fun probe(config: VaultConfig): List<VaultStatus> = VaultSelector.probe(config)
+
+    /**
+     * Labels of the OS keyring's collections (Linux Secret Service). Empty on
+     * platforms without separate collections (Windows/macOS) or when no keyring
+     * is reachable.
+     */
+    public fun collections(config: VaultConfig): List<String> = VaultSelector.collections(config)
 }

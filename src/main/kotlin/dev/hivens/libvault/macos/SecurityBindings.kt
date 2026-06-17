@@ -9,23 +9,13 @@ import java.lang.foreign.ValueLayout
 import java.lang.invoke.MethodHandle
 
 /**
- * Panama bindings to macOS Keychain Services (`SecItem*`) + the CoreFoundation
- * glue, plus the raw store/retrieve/delete marshalling keyed by `(service,
- * account)`. Items are generic passwords in the user's login Keychain, encrypted
- * by `securityd` under the login password (Secure Enclave-bound on Apple
- * Silicon).
+ * Panama bindings to macOS Keychain Services (`SecItem*`) + CoreFoundation glue,
+ * plus raw store/retrieve/delete/enumerate/describe marshalling keyed by
+ * `(service, account)`. Items are generic passwords in the login Keychain.
  *
- * ```c
- * OSStatus SecItemAdd          (CFDictionaryRef attrs, CFTypeRef *result);
- * OSStatus SecItemCopyMatching (CFDictionaryRef query, CFTypeRef *result);
- * OSStatus SecItemUpdate       (CFDictionaryRef query, CFDictionaryRef attrsToUpdate);
- * OSStatus SecItemDelete       (CFDictionaryRef query);
- * ```
- *
- * Ported from the reviewed Aura/Nexira Keychain backend. Untested on a physical
- * Mac at write time -- the layout follows Apple's documented C ABI and the
- * Linux/Windows peers cross-check the shape. A real-Mac store/retrieve
- * miscompare is a bug report against this file.
+ * Ported and extended from the reviewed Aura/Nexira Keychain backend. Untested on
+ * a physical Mac at write time -- the layouts follow Apple's documented C ABI and
+ * the Linux/Windows peers cross-check the shape.
  */
 internal class SecurityBindings private constructor(
     private val arena: Arena,
@@ -39,47 +29,78 @@ internal class SecurityBindings private constructor(
     private val cfDictionaryCreate: MethodHandle,
     private val cfDataGetBytePtr: MethodHandle,
     private val cfDataGetLength: MethodHandle,
-    private val kSecClass: MemorySegment,
-    private val kSecClassGenericPassword: MemorySegment,
-    private val kSecAttrService: MemorySegment,
-    private val kSecAttrAccount: MemorySegment,
-    private val kSecValueData: MemorySegment,
-    private val kSecReturnData: MemorySegment,
-    private val kCFBooleanTrue: MemorySegment,
-    private val keyCallBacks: MemorySegment,
-    private val valueCallBacks: MemorySegment,
+    private val cfArrayGetCount: MethodHandle,
+    private val cfArrayGetValueAtIndex: MethodHandle,
+    private val cfDictionaryGetValue: MethodHandle,
+    private val cfStringGetCString: MethodHandle,
+    private val cfDateGetAbsoluteTime: MethodHandle,
+    private val c: Constants,
 ) {
 
-    fun store(service: String, account: String, secret: ByteArray): Boolean = Arena.ofConfined().use { call ->
-        val refs = mutableListOf<MemorySegment>()
-        try {
-            val serviceCF = cfString(call, service).also { refs += it }
-            val accountCF = cfString(call, account).also { refs += it }
-            val dataCF = cfData(call, secret).also { refs += it }
+    /** Deref'd kSec/kCF constants, grouped so the constructor stays readable. */
+    internal class Constants(
+        val kSecClass: MemorySegment,
+        val kSecClassGenericPassword: MemorySegment,
+        val kSecAttrService: MemorySegment,
+        val kSecAttrAccount: MemorySegment,
+        val kSecValueData: MemorySegment,
+        val kSecReturnData: MemorySegment,
+        val kSecReturnAttributes: MemorySegment,
+        val kSecMatchLimit: MemorySegment,
+        val kSecMatchLimitAll: MemorySegment,
+        val kSecAttrLabel: MemorySegment,
+        val kSecAttrCreationDate: MemorySegment?,
+        val kSecAttrModificationDate: MemorySegment?,
+        val kSecAttrAccessible: MemorySegment?,
+        val accessibleValues: Map<String, MemorySegment>,
+        val kCFBooleanTrue: MemorySegment,
+        val keyCallBacks: MemorySegment,
+        val valueCallBacks: MemorySegment,
+    )
 
-            val addQuery = cfDictionary(
-                call,
-                arrayOf(kSecClass, kSecAttrService, kSecAttrAccount, kSecValueData),
-                arrayOf(kSecClassGenericPassword, serviceCF, accountCF, dataCF),
-            ).also { refs += it }
+    /** Read-side attributes for one item. */
+    class Meta(val label: String?, val createdSeconds: Long, val modifiedSeconds: Long)
 
-            var status = secItemAdd.invokeExact(addQuery, MemorySegment.NULL) as Int
-            if (status == ERR_DUPLICATE_ITEM) {
-                val locator = cfDictionary(
-                    call,
-                    arrayOf(kSecClass, kSecAttrService, kSecAttrAccount),
-                    arrayOf(kSecClassGenericPassword, serviceCF, accountCF),
-                ).also { refs += it }
-                val updates = cfDictionary(call, arrayOf(kSecValueData), arrayOf(dataCF)).also { refs += it }
-                status = secItemUpdate.invokeExact(locator, updates) as Int
+    fun store(service: String, account: String, secret: ByteArray, label: String?, accessibilityName: String): Boolean =
+        Arena.ofConfined().use { call ->
+            val refs = mutableListOf<MemorySegment>()
+            try {
+                val serviceCF = cfString(call, service).also { refs += it }
+                val accountCF = cfString(call, account).also { refs += it }
+                val dataCF = cfData(call, secret).also { refs += it }
+
+                val addKeys = mutableListOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount, c.kSecValueData)
+                val addVals = mutableListOf(c.kSecClassGenericPassword, serviceCF, accountCF, dataCF)
+                if (label != null) {
+                    addKeys += c.kSecAttrLabel
+                    addVals += cfString(call, label).also { refs += it }
+                }
+                val accessible = c.kSecAttrAccessible
+                val accessibleVal = c.accessibleValues[accessibilityName]
+                if (accessible != null && accessibleVal != null) {
+                    addKeys += accessible
+                    addVals += accessibleVal
+                }
+
+                val addQuery = cfDictionary(call, addKeys.toTypedArray(), addVals.toTypedArray()).also { refs += it }
+
+                var status = secItemAdd.invokeExact(addQuery, MemorySegment.NULL) as Int
+                if (status == ERR_DUPLICATE_ITEM) {
+                    val locator = cfDictionary(
+                        call,
+                        arrayOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount),
+                        arrayOf(c.kSecClassGenericPassword, serviceCF, accountCF),
+                    ).also { refs += it }
+                    val updates = cfDictionary(call, arrayOf(c.kSecValueData), arrayOf(dataCF)).also { refs += it }
+                    status = secItemUpdate.invokeExact(locator, updates) as Int
+                }
+                status == ERR_SUCCESS
+            } catch (t: Throwable) {
+                false
+            } finally {
+                releaseAll(refs)
             }
-            status == ERR_SUCCESS
-        } catch (t: Throwable) {
-            false
-        } finally {
-            releaseAll(refs)
         }
-    }
 
     fun retrieve(service: String, account: String): ByteArray? = Arena.ofConfined().use { call ->
         val refs = mutableListOf<MemorySegment>()
@@ -88,8 +109,8 @@ internal class SecurityBindings private constructor(
             val accountCF = cfString(call, account).also { refs += it }
             val query = cfDictionary(
                 call,
-                arrayOf(kSecClass, kSecAttrService, kSecAttrAccount, kSecReturnData),
-                arrayOf(kSecClassGenericPassword, serviceCF, accountCF, kCFBooleanTrue),
+                arrayOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount, c.kSecReturnData),
+                arrayOf(c.kSecClassGenericPassword, serviceCF, accountCF, c.kCFBooleanTrue),
             ).also { refs += it }
 
             val outPtr = call.allocate(ValueLayout.ADDRESS)
@@ -97,15 +118,10 @@ internal class SecurityBindings private constructor(
             if (status != ERR_SUCCESS) return@use null
             val cfDataRef = outPtr.get(ValueLayout.ADDRESS, 0)
             if (cfDataRef.address() == 0L) return@use null
-            // CopyMatching's result is caller-owned -- track it for release too.
             refs += cfDataRef
             val length = cfDataGetLength.invokeExact(cfDataRef) as Long
             val ptr = cfDataGetBytePtr.invokeExact(cfDataRef) as MemorySegment
-            if (length > 0 && ptr.address() != 0L) {
-                ptr.reinterpret(length).toArray(ValueLayout.JAVA_BYTE)
-            } else {
-                ByteArray(0)
-            }
+            if (length > 0 && ptr.address() != 0L) ptr.reinterpret(length).toArray(ValueLayout.JAVA_BYTE) else ByteArray(0)
         } catch (t: Throwable) {
             null
         } finally {
@@ -120,14 +136,74 @@ internal class SecurityBindings private constructor(
             val accountCF = cfString(call, account).also { refs += it }
             val query = cfDictionary(
                 call,
-                arrayOf(kSecClass, kSecAttrService, kSecAttrAccount),
-                arrayOf(kSecClassGenericPassword, serviceCF, accountCF),
+                arrayOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount),
+                arrayOf(c.kSecClassGenericPassword, serviceCF, accountCF),
             ).also { refs += it }
             val status = secItemDelete.invokeExact(query) as Int
-            // Idempotent: nothing to delete is success.
             status == ERR_SUCCESS || status == ERR_ITEM_NOT_FOUND
         } catch (t: Throwable) {
             false
+        } finally {
+            releaseAll(refs)
+        }
+    }
+
+    /** Accounts under [service]. Empty on fault. */
+    fun enumerate(service: String): List<String> = Arena.ofConfined().use { call ->
+        val refs = mutableListOf<MemorySegment>()
+        try {
+            val serviceCF = cfString(call, service).also { refs += it }
+            val query = cfDictionary(
+                call,
+                arrayOf(c.kSecClass, c.kSecAttrService, c.kSecMatchLimit, c.kSecReturnAttributes),
+                arrayOf(c.kSecClassGenericPassword, serviceCF, c.kSecMatchLimitAll, c.kCFBooleanTrue),
+            ).also { refs += it }
+
+            val outPtr = call.allocate(ValueLayout.ADDRESS)
+            val status = secItemCopyMatching.invokeExact(query, outPtr) as Int
+            if (status != ERR_SUCCESS) return@use emptyList<String>()
+            val arrayRef = outPtr.get(ValueLayout.ADDRESS, 0)
+            if (arrayRef.address() == 0L) return@use emptyList<String>()
+            refs += arrayRef
+            val count = cfArrayGetCount.invokeExact(arrayRef) as Long
+            val out = ArrayList<String>(count.toInt().coerceAtLeast(0))
+            for (i in 0 until count) {
+                val dict = cfArrayGetValueAtIndex.invokeExact(arrayRef, i) as MemorySegment
+                if (dict.address() == 0L) continue
+                val accountRef = cfDictionaryGetValue.invokeExact(dict, c.kSecAttrAccount) as MemorySegment
+                cfStringToJava(call, accountRef)?.let { out += it }
+            }
+            out
+        } catch (t: Throwable) {
+            emptyList()
+        } finally {
+            releaseAll(refs)
+        }
+    }
+
+    fun describe(service: String, account: String): Meta? = Arena.ofConfined().use { call ->
+        val refs = mutableListOf<MemorySegment>()
+        try {
+            val serviceCF = cfString(call, service).also { refs += it }
+            val accountCF = cfString(call, account).also { refs += it }
+            val query = cfDictionary(
+                call,
+                arrayOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount, c.kSecReturnAttributes),
+                arrayOf(c.kSecClassGenericPassword, serviceCF, accountCF, c.kCFBooleanTrue),
+            ).also { refs += it }
+
+            val outPtr = call.allocate(ValueLayout.ADDRESS)
+            val status = secItemCopyMatching.invokeExact(query, outPtr) as Int
+            if (status != ERR_SUCCESS) return@use null
+            val dict = outPtr.get(ValueLayout.ADDRESS, 0)
+            if (dict.address() == 0L) return@use null
+            refs += dict
+            val label = cfStringToJava(call, cfDictionaryGetValue.invokeExact(dict, c.kSecAttrLabel) as MemorySegment)
+            val created = c.kSecAttrCreationDate?.let { cfDateSeconds(cfDictionaryGetValue.invokeExact(dict, it) as MemorySegment) } ?: 0
+            val modified = c.kSecAttrModificationDate?.let { cfDateSeconds(cfDictionaryGetValue.invokeExact(dict, it) as MemorySegment) } ?: 0
+            Meta(label, created, modified)
+        } catch (t: Throwable) {
+            null
         } finally {
             releaseAll(refs)
         }
@@ -143,9 +219,7 @@ internal class SecurityBindings private constructor(
         val bytes = s.toByteArray(Charsets.UTF_8)
         val buf = call.allocate(bytes.size.toLong().coerceAtLeast(1))
         if (bytes.isNotEmpty()) MemorySegment.copy(bytes, 0, buf, ValueLayout.JAVA_BYTE, 0, bytes.size)
-        return cfStringCreate.invokeExact(
-            MemorySegment.NULL, buf, bytes.size.toLong(), CF_ENCODING_UTF8, 0.toByte(),
-        ) as MemorySegment
+        return cfStringCreate.invokeExact(MemorySegment.NULL, buf, bytes.size.toLong(), CF_ENCODING_UTF8, 0.toByte()) as MemorySegment
     }
 
     private fun cfData(call: Arena, bytes: ByteArray): MemorySegment {
@@ -163,8 +237,23 @@ internal class SecurityBindings private constructor(
             valuesBuf.setAtIndex(ValueLayout.ADDRESS, i.toLong(), values[i])
         }
         return cfDictionaryCreate.invokeExact(
-            MemorySegment.NULL, keysBuf, valuesBuf, n.toLong(), keyCallBacks, valueCallBacks,
+            MemorySegment.NULL, keysBuf, valuesBuf, n.toLong(), c.keyCallBacks, c.valueCallBacks,
         ) as MemorySegment
+    }
+
+    private fun cfStringToJava(call: Arena, str: MemorySegment): String? {
+        if (str.address() == 0L) return null
+        val cap = 2048L
+        val buf = call.allocate(cap)
+        val ok = cfStringGetCString.invokeExact(str, buf, cap, CF_ENCODING_UTF8) as Int
+        return if (ok == 0) null else buf.reinterpret(cap).getString(0, Charsets.UTF_8)
+    }
+
+    private fun cfDateSeconds(date: MemorySegment): Long {
+        if (date.address() == 0L) return 0
+        val abs = cfDateGetAbsoluteTime.invokeExact(date) as Double // seconds since 2001-01-01
+        if (abs == 0.0) return 0
+        return (abs + CF_ABSOLUTE_EPOCH_OFFSET).toLong()
     }
 
     private fun releaseAll(refs: List<MemorySegment>) {
@@ -182,6 +271,16 @@ internal class SecurityBindings private constructor(
         private const val ERR_DUPLICATE_ITEM = -25299
         private const val CF_ENCODING_UTF8 = 0x08000100
 
+        // Seconds between the Unix epoch (1970) and the CF reference date (2001).
+        private const val CF_ABSOLUTE_EPOCH_OFFSET = 978_307_200.0
+
+        private val ACCESSIBLE_NAMES = listOf(
+            "kSecAttrAccessibleWhenUnlocked",
+            "kSecAttrAccessibleAfterFirstUnlock",
+            "kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
+            "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
+        )
+
         fun load(): SecurityBindings? {
             val arena = Arena.ofShared()
             val security = runCatching { SymbolLookup.libraryLookup(SECURITY, arena) }.getOrNull()
@@ -198,24 +297,20 @@ internal class SecurityBindings private constructor(
             val cfRelease = cf.downcall("CFRelease", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS))
             val cfStringCreate = cf.downcall(
                 "CFStringCreateWithBytes",
-                FunctionDescriptor.of(
-                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.JAVA_BYTE,
-                ),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.JAVA_BYTE),
             )
-            val cfDataCreate = cf.downcall(
-                "CFDataCreate",
-                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG),
-            )
+            val cfDataCreate = cf.downcall("CFDataCreate", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG))
             val cfDictionaryCreate = cf.downcall(
                 "CFDictionaryCreate",
-                FunctionDescriptor.of(
-                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                ),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
             )
             val cfDataGetBytePtr = cf.downcall("CFDataGetBytePtr", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS))
             val cfDataGetLength = cf.downcall("CFDataGetLength", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS))
+            val cfArrayGetCount = cf.downcall("CFArrayGetCount", FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS))
+            val cfArrayGetValueAtIndex = cf.downcall("CFArrayGetValueAtIndex", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG))
+            val cfDictionaryGetValue = cf.downcall("CFDictionaryGetValue", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS))
+            val cfStringGetCString = cf.downcall("CFStringGetCString", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT))
+            val cfDateGetAbsoluteTime = cf.downcall("CFDateGetAbsoluteTime", FunctionDescriptor.of(ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS))
 
             val kSecClass = derefCFConstant(security, "kSecClass")
             val kSecClassGenericPassword = derefCFConstant(security, "kSecClassGenericPassword")
@@ -223,26 +318,44 @@ internal class SecurityBindings private constructor(
             val kSecAttrAccount = derefCFConstant(security, "kSecAttrAccount")
             val kSecValueData = derefCFConstant(security, "kSecValueData")
             val kSecReturnData = derefCFConstant(security, "kSecReturnData")
+            val kSecReturnAttributes = derefCFConstant(security, "kSecReturnAttributes")
+            val kSecMatchLimit = derefCFConstant(security, "kSecMatchLimit")
+            val kSecMatchLimitAll = derefCFConstant(security, "kSecMatchLimitAll")
+            val kSecAttrLabel = derefCFConstant(security, "kSecAttrLabel")
+            val kSecAttrCreationDate = derefCFConstant(security, "kSecAttrCreationDate")
+            val kSecAttrModificationDate = derefCFConstant(security, "kSecAttrModificationDate")
+            val kSecAttrAccessible = derefCFConstant(security, "kSecAttrAccessible")
+            val accessibleValues = ACCESSIBLE_NAMES.mapNotNull { name ->
+                derefCFConstant(security, name)?.let { name to it }
+            }.toMap()
             val kCFBooleanTrue = derefCFConstant(cf, "kCFBooleanTrue")
             val keyCallBacks = cf.find("kCFTypeDictionaryKeyCallBacks").orElse(null)
             val valueCallBacks = cf.find("kCFTypeDictionaryValueCallBacks").orElse(null)
 
             if (secItemAdd == null || secItemCopy == null || secItemUpdate == null || secItemDelete == null ||
                 cfRelease == null || cfStringCreate == null || cfDataCreate == null || cfDictionaryCreate == null ||
-                cfDataGetBytePtr == null || cfDataGetLength == null ||
+                cfDataGetBytePtr == null || cfDataGetLength == null || cfArrayGetCount == null ||
+                cfArrayGetValueAtIndex == null || cfDictionaryGetValue == null || cfStringGetCString == null ||
+                cfDateGetAbsoluteTime == null ||
                 kSecClass == null || kSecClassGenericPassword == null || kSecAttrService == null ||
-                kSecAttrAccount == null || kSecValueData == null || kSecReturnData == null || kCFBooleanTrue == null ||
-                keyCallBacks == null || valueCallBacks == null
+                kSecAttrAccount == null || kSecValueData == null || kSecReturnData == null ||
+                kSecReturnAttributes == null || kSecMatchLimit == null || kSecMatchLimitAll == null ||
+                kSecAttrLabel == null || kCFBooleanTrue == null || keyCallBacks == null || valueCallBacks == null
             ) {
                 arena.close()
                 return null
             }
 
+            val constants = Constants(
+                kSecClass, kSecClassGenericPassword, kSecAttrService, kSecAttrAccount, kSecValueData,
+                kSecReturnData, kSecReturnAttributes, kSecMatchLimit, kSecMatchLimitAll, kSecAttrLabel,
+                kSecAttrCreationDate, kSecAttrModificationDate, kSecAttrAccessible, accessibleValues,
+                kCFBooleanTrue, keyCallBacks, valueCallBacks,
+            )
             return SecurityBindings(
                 arena, secItemAdd, secItemCopy, secItemUpdate, secItemDelete, cfRelease, cfStringCreate,
-                cfDataCreate, cfDictionaryCreate, cfDataGetBytePtr, cfDataGetLength,
-                kSecClass, kSecClassGenericPassword, kSecAttrService, kSecAttrAccount, kSecValueData,
-                kSecReturnData, kCFBooleanTrue, keyCallBacks, valueCallBacks,
+                cfDataCreate, cfDictionaryCreate, cfDataGetBytePtr, cfDataGetLength, cfArrayGetCount,
+                cfArrayGetValueAtIndex, cfDictionaryGetValue, cfStringGetCString, cfDateGetAbsoluteTime, constants,
             )
         }
 

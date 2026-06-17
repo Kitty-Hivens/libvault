@@ -52,6 +52,41 @@ Vault.open(VaultConfig(namespace = "dev.hivens.nexira")).use { vault ->
 than throw. The only thing the API throws is `IllegalArgumentException` on a blank
 namespace or key. `Vault.open` never throws on a backend fault.
 
+## Capabilities
+
+Beyond the five base methods, optional features live on sub-interfaces a backend
+implements only when it can. Discover them with the `asX()` helpers (null = not
+supported here):
+
+```kotlin
+vault.asEnumerable()?.list()                    // all keys in the namespace; clear() wipes them
+vault.asDescribable()?.describe("accessToken")  // label / created / modified / attributes
+vault.asLabeled()?.store("k", bytes, label = "My App", attributes = mapOf("env" to "prod"))
+vault.asMigratable()?.migrateTo(other, deleteAfter = true)
+vault.asWatchable()?.onWatch { change -> /* item changed externally (Linux) */ }
+```
+
+### Unlocking a locked keyring
+
+`Vault.open` never prompts -- a locked keyring degrades to the file tier. To offer
+an unlock, probe first, then open with the opt-in policy:
+
+```kotlin
+val locked = Vault.probe(config).any {
+    it.tier == VaultTier.OsKeyring && it.availability == VaultAvailability.Locked
+}
+if (locked && userAgreed) {
+    Vault.open(config.copy(unlockPolicy = UnlockPolicy.IfLocked)).use { vault ->
+        // vault.secure is true if the user completed the system prompt
+    }
+}
+```
+
+On Linux this raises the Secret Service prompt and waits up to `unlockTimeoutMs`.
+Windows/macOS keychains unlock with the login session, so `unlock()` is a no-op
+that succeeds. For permanent unlock-at-login, configure PAM (`pam_gnome_keyring`)
+rather than calling this each run.
+
 ## Configuration
 
 ```kotlin

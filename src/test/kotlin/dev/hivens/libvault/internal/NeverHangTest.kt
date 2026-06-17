@@ -3,7 +3,6 @@ package dev.hivens.libvault.internal
 import dev.hivens.libvault.VaultTier
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
-import org.slf4j.LoggerFactory
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.system.measureTimeMillis
@@ -36,24 +35,5 @@ class NeverHangTest {
         // Three 60s sleeps would be 180s; we must be back in well under that.
         (elapsed < 5_000L) shouldBe true
         vault.close()
-    }
-
-    @Test
-    fun `setup that overruns the probe budget is treated as unavailable`() {
-        val log = LoggerFactory.getLogger("never-hang-test")
-        val elapsed = measureTimeMillis {
-            val opened = openOnDispatchThread<String>(log, "test-setup", probeTimeoutMs = 150) {
-                Thread.sleep(60_000)
-                "should-never-be-returned"
-            }
-            opened shouldBe null
-        }
-        (elapsed < 5_000L) shouldBe true
-    }
-
-    @Test
-    fun `setup returning null is unavailable, not an error`() {
-        val log = LoggerFactory.getLogger("never-hang-test")
-        openOnDispatchThread<String>(log, "test-setup", probeTimeoutMs = 1_000) { null } shouldBe null
     }
 }

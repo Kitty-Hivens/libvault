@@ -1,6 +1,12 @@
 package dev.hivens.libvault.internal
 
+import dev.hivens.libvault.DescribableVault
+import dev.hivens.libvault.EntryMetadata
+import dev.hivens.libvault.EnumerableVault
 import dev.hivens.libvault.KeyDerivation
+import dev.hivens.libvault.LabeledVault
+import dev.hivens.libvault.MigratableVault
+import dev.hivens.libvault.MigrationReport
 import dev.hivens.libvault.SecretVault
 import dev.hivens.libvault.VaultTier
 import org.slf4j.LoggerFactory
@@ -15,6 +21,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
+import java.time.Instant
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -28,24 +35,21 @@ import javax.crypto.spec.SecretKeySpec
  * saltLen[1] salt[saltLen]
  * verifierNonceLen[1] verifierNonce[..] verifierCtLen[4] verifierCt[..]
  * recordCount[4]
- *   repeated: keyUTF, nonceLen[1] nonce[..], ctLen[4] ct[..]
+ *   v1 record: keyUTF, nonceLen[1] nonce[..], ctLen[4] ct[..]
+ *   v2 record: ... + createdMillis[8] modifiedMillis[8] hasLabel[1] [labelUTF]
+ *              attrCount[2] (keyUTF valUTF)*
  * ```
  * The verifier is a fixed plaintext encrypted under the derived key; decrypting
- * it on open proves the key still matches (same passphrase / unchanged machine).
- * If it doesn't, the records are unreadable and the next [store] reinitializes
- * the file. Each record's ciphertext is bound to its key via GCM AAD, so a
- * record copied to another key fails authentication.
- *
- * Writes are atomic (temp file + rename). This tier is honest about being
- * obfuscation, not protection: [secure] is false. It is synchronous and never
- * times out -- it's the floor the keyring tiers fall back to, so it must always
- * answer.
+ * it on open proves the key still matches. Each record's ciphertext is bound to
+ * its key via GCM AAD. Writes are atomic (temp + rename). Always serialized as
+ * v2; v1 files are still read (metadata defaults to unknown). [secure] is false
+ * -- this tier is obfuscation, not protection. Synchronous, never times out.
  */
 internal class SoftwareFileVault private constructor(
     private val path: Path,
     private val configKdfId: Int,
     private var passphrase: CharArray?,
-) : SecretVault {
+) : SecretVault, EnumerableVault, DescribableVault, LabeledVault, MigratableVault {
 
     override val tier: VaultTier = VaultTier.SoftwareFile
     override val backend: String = "aes-256-gcm file"
@@ -63,16 +67,30 @@ internal class SoftwareFileVault private constructor(
     private var verifierOk: Boolean = false
     private val records = LinkedHashMap<String, Record>()
 
-    private class Record(val nonce: ByteArray, val ct: ByteArray)
+    private class Record(
+        val nonce: ByteArray,
+        val ct: ByteArray,
+        val createdMillis: Long,
+        val modifiedMillis: Long,
+        val label: String?,
+        val attributes: Map<String, String>,
+    )
 
-    override fun store(key: String, secret: ByteArray): Boolean {
+    override fun store(key: String, secret: ByteArray): Boolean = putRecord(key, secret, null, emptyMap())
+
+    override fun store(key: String, secret: ByteArray, label: String?, attributes: Map<String, String>): Boolean =
+        putRecord(key, secret, label, attributes)
+
+    private fun putRecord(key: String, secret: ByteArray, label: String?, attributes: Map<String, String>): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) {
             if (closed) return false
             ensureWritableKey()
             val k = this.key ?: return false
             val (nonce, ct) = encrypt(k, secret, key.toByteArray(StandardCharsets.UTF_8))
-            records[key] = Record(nonce, ct)
+            val now = System.currentTimeMillis()
+            val created = records[key]?.createdMillis?.takeIf { it > 0 } ?: now
+            records[key] = Record(nonce, ct, created, now, label, attributes.toMap())
             return persist()
         }
     }
@@ -91,12 +109,10 @@ internal class SoftwareFileVault private constructor(
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) {
             if (closed) return false
-            // Without a matching key we have no right to rewrite the file: the
-            // records came from parse() and belong to whoever holds the real
-            // key. Mirror retrieve/contains -- report the (inaccessible) key as
-            // already gone, touch nothing on disk.
+            // Without a matching key we have no right to rewrite the file (the
+            // records came from parse() and belong to whoever holds the real key).
             if (!verifierOk) return true
-            val removed = records.remove(key) ?: return true // idempotent: nothing to delete
+            val removed = records.remove(key) ?: return true // idempotent
             removed.ct.fill(0)
             return if (records.isEmpty() && salt == null) true else persist()
         }
@@ -106,6 +122,38 @@ internal class SoftwareFileVault private constructor(
         require(key.isNotBlank()) { "key must be non-blank" }
         synchronized(lock) { return !closed && verifierOk && records.containsKey(key) }
     }
+
+    override fun list(): List<String> {
+        synchronized(lock) { return if (closed || !verifierOk) emptyList() else records.keys.toList() }
+    }
+
+    override fun clear(): Int {
+        synchronized(lock) {
+            if (closed || !verifierOk) return 0
+            val count = records.size
+            if (count == 0) return 0
+            for (r in records.values) r.ct.fill(0)
+            records.clear()
+            return if (persist()) count else -1
+        }
+    }
+
+    override fun describe(key: String): EntryMetadata? {
+        require(key.isNotBlank()) { "key must be non-blank" }
+        synchronized(lock) {
+            if (closed || !verifierOk) return null
+            val r = records[key] ?: return null
+            return EntryMetadata(
+                label = r.label,
+                created = r.createdMillis.takeIf { it > 0 }?.let { Instant.ofEpochMilli(it) },
+                modified = r.modifiedMillis.takeIf { it > 0 }?.let { Instant.ofEpochMilli(it) },
+                attributes = r.attributes,
+            )
+        }
+    }
+
+    override fun migrateTo(target: SecretVault, deleteAfter: Boolean): MigrationReport =
+        Migrator.migrate(this, target, deleteAfter)
 
     override fun close() {
         synchronized(lock) {
@@ -119,11 +167,6 @@ internal class SoftwareFileVault private constructor(
 
     // ── Key lifecycle ─────────────────────────────────────────────────────────
 
-    /**
-     * Guarantee [key] is set and matches the file. Initializes a fresh file, or
-     * reinitializes one whose key no longer matches (passphrase or machine
-     * changed) -- in the reinit case the old, now-unreadable records are dropped.
-     */
     private fun ensureWritableKey() {
         if (key != null && verifierOk) return
         if (salt != null && records.isNotEmpty()) {
@@ -185,7 +228,8 @@ internal class SoftwareFileVault private constructor(
             val magic = ByteArray(MAGIC.size)
             input.readFully(magic)
             if (!magic.contentEquals(MAGIC)) return false
-            if (input.readUnsignedByte() != VERSION) return false
+            val version = input.readUnsignedByte()
+            if (version != VERSION_1 && version != VERSION_2) return false
             storedKdfId = input.readUnsignedByte()
             salt = ByteArray(input.readUnsignedByte()).also { input.readFully(it) }
             verifierNonce = ByteArray(input.readUnsignedByte()).also { input.readFully(it) }
@@ -195,7 +239,15 @@ internal class SoftwareFileVault private constructor(
                 val k = input.readUTF()
                 val nonce = ByteArray(input.readUnsignedByte()).also { input.readFully(it) }
                 val ct = readSized(input)
-                records[k] = Record(nonce, ct)
+                if (version >= VERSION_2) {
+                    val created = input.readLong()
+                    val modified = input.readLong()
+                    val label = if (input.readBoolean()) input.readUTF() else null
+                    val attrs = readAttributes(input)
+                    records[k] = Record(nonce, ct, created, modified, label, attrs)
+                } else {
+                    records[k] = Record(nonce, ct, 0, 0, null, emptyMap())
+                }
             }
         }
         true
@@ -210,7 +262,7 @@ internal class SoftwareFileVault private constructor(
         records.clear()
     }
 
-    // ── Persist ─────────────────────────────────────────────────────────────────
+    // ── Persist (always v2) ──────────────────────────────────────────────────────
 
     private fun persist(): Boolean {
         val out = runCatching { serialize() }.getOrElse {
@@ -240,7 +292,7 @@ internal class SoftwareFileVault private constructor(
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use { out ->
             out.write(MAGIC)
-            out.writeByte(VERSION)
+            out.writeByte(VERSION_2)
             out.writeByte(storedKdfId)
             out.writeByte(saltBytes.size)
             out.write(saltBytes)
@@ -255,9 +307,30 @@ internal class SoftwareFileVault private constructor(
                 out.write(record.nonce)
                 out.writeInt(record.ct.size)
                 out.write(record.ct)
+                out.writeLong(record.createdMillis)
+                out.writeLong(record.modifiedMillis)
+                out.writeBoolean(record.label != null)
+                record.label?.let { out.writeUTF(it) }
+                writeAttributes(out, record.attributes)
             }
         }
         return buffer.toByteArray()
+    }
+
+    private fun writeAttributes(out: DataOutputStream, attrs: Map<String, String>) {
+        out.writeShort(attrs.size)
+        for ((k, v) in attrs) {
+            out.writeUTF(k)
+            out.writeUTF(v)
+        }
+    }
+
+    private fun readAttributes(input: DataInputStream): Map<String, String> {
+        val n = input.readUnsignedShort()
+        if (n == 0) return emptyMap()
+        val out = LinkedHashMap<String, String>(n)
+        repeat(n) { out[input.readUTF()] = input.readUTF() }
+        return out
     }
 
     // ── AES-256-GCM ─────────────────────────────────────────────────────────────
@@ -282,19 +355,14 @@ internal class SoftwareFileVault private constructor(
 
     companion object {
         private val MAGIC = byteArrayOf('L'.code.toByte(), 'V'.code.toByte(), 'L'.code.toByte(), 'T'.code.toByte())
-        private const val VERSION = 1
+        private const val VERSION_1 = 1
+        private const val VERSION_2 = 2
         private const val SALT_LEN = 16
         private const val GCM_NONCE_LEN = 12
         private const val GCM_TAG_BITS = 128
         private val VERIFIER_PLAINTEXT = "libvault-verifier-v1".toByteArray(StandardCharsets.UTF_8)
         private val VERIFIER_AAD = "verifier".toByteArray(StandardCharsets.UTF_8)
 
-        /**
-         * Open (and read, if present) the file at [path]. The [keyDerivation]'s
-         * passphrase, if any, is copied so the caller may zero its own array
-         * after [Vault.open]. Always returns a usable vault -- a missing or
-         * corrupt file just means "no entries yet".
-         */
         fun open(path: Path, keyDerivation: KeyDerivation): SoftwareFileVault {
             val passphraseCopy = (keyDerivation as? KeyDerivation.Passphrase)?.passphrase?.copyOf()
             return SoftwareFileVault(path, KdfEngine.kdfId(keyDerivation), passphraseCopy).also { it.load() }

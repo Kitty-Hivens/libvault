@@ -6,7 +6,6 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -65,7 +64,13 @@ internal abstract class SingleThreadVault(
         return bounded(false) { containsRaw(key) }
     }
 
-    private fun <T> bounded(default: T, op: () -> T): T {
+    /**
+     * Run [op] on the dispatch thread, bounded by [opTimeoutMs]; on timeout or
+     * failure return [default]. Subclasses wrap their capability ops (list,
+     * describe, labeled store, ...) through this so those degrade and stay
+     * connection-thread-safe like the core ops.
+     */
+    protected fun <T> bounded(default: T, op: () -> T): T {
         if (closed.get()) return default
         return try {
             executor.submit(Callable { op() }).get(opTimeoutMs, TimeUnit.MILLISECONDS)
@@ -84,40 +89,4 @@ internal abstract class SingleThreadVault(
             .onFailure { log.warn("{} cleanup did not finish cleanly: {}", backend, it.message) }
         executor.shutdownNow()
     }
-}
-
-/**
- * Spin up the single dispatch thread for an OS-keyring backend and run its
- * native [openHandles] setup on it, bounded by [probeTimeoutMs]. Returns the
- * live executor paired with the opened handle bundle, or null (tearing the
- * executor back down) when setup fails, times out, or reports unavailable.
- *
- * Keeping setup on the same thread that later serves ops is what lets a libdbus
- * connection be created and used without ever crossing a thread boundary.
- */
-internal fun <H : Any> openOnDispatchThread(
-    log: Logger,
-    threadName: String,
-    probeTimeoutMs: Long,
-    openHandles: () -> H?,
-): Pair<ExecutorService, H>? {
-    val executor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, threadName).apply { isDaemon = true }
-    }
-    val handles: H? = try {
-        executor.submit(Callable { openHandles() }).get(probeTimeoutMs, TimeUnit.MILLISECONDS)
-    } catch (e: TimeoutException) {
-        log.info("{} setup exceeded {} ms -- treating tier as unavailable", threadName, probeTimeoutMs)
-        executor.shutdownNow()
-        return null
-    } catch (e: Exception) {
-        log.info("{} setup failed: {}", threadName, e.message ?: e.javaClass.simpleName)
-        executor.shutdownNow()
-        return null
-    }
-    if (handles == null) {
-        executor.shutdownNow()
-        return null
-    }
-    return executor to handles
 }
