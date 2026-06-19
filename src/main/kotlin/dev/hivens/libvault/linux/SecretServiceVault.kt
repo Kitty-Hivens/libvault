@@ -319,6 +319,9 @@ internal class SecretServiceVault private constructor(
         val c = conn
         if (c != null) {
             runCatching { closeSession() }
+            // Private connection: close (detach from the bus, release the
+            // socket) before the final unref.
+            runCatching { bindings.handle("dbus_connection_close").invokeExact(c) as Unit }
             runCatching { bindings.handle("dbus_connection_unref").invokeExact(c) as Unit }
         }
         runCatching { bindings.arena.close() }
@@ -468,7 +471,7 @@ internal class SecretServiceVault private constructor(
     private fun busGet(): MemorySegment? = Arena.ofConfined().use { setup ->
         val error = setup.allocate(bindings.errorLayout)
         bindings.handle("dbus_error_init").invokeExact(error) as Unit
-        val c = bindings.handle("dbus_bus_get").invokeExact(DBusBindings.DBUS_BUS_SESSION, error) as MemorySegment
+        val c = bindings.handle("dbus_bus_get_private").invokeExact(DBusBindings.DBUS_BUS_SESSION, error) as MemorySegment
         if (c.address() == 0L) {
             freeErrorIfSet(error); null
         } else {

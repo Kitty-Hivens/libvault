@@ -4,7 +4,21 @@ All notable changes to libvault are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.1]
+
+### Fixed
+
+- Linux: the Secret Service backend opens a private D-Bus connection
+  (`dbus_bus_get_private`) instead of the process-shared `dbus_bus_get`
+  one. A shared connection has a single incoming-message queue; another
+  libdbus user in the same process that runs its own
+  `dbus_connection_pop_message` loop (a tray or notification library)
+  could pop -- and drop -- messages destined for this backend, and vice
+  versa. A private connection is drained solely by our own dispatch
+  thread. `teardown()` now closes the private connection before the
+  final unref. (`exit_on_disconnect` was already disabled.)
+
+## [0.2.0]
 
 A comprehensive capability pass. Everything is additive -- 0.1.0 callers compile
 and behave unchanged; the new features live on opt-in sub-interfaces discovered
