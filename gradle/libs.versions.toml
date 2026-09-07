@@ -2,7 +2,7 @@
 # Pinned to the Nexira launcher's Kotlin so the cross-project Panama bindings
 # stay binary-compatible. 2.4.1 can be substituted once it is on the plugin
 # portal; the build does not depend on anything 2.4.1-only.
-kotlin = "2.4.0"
+kotlin = "2.4.10"
 slf4j  = "2.0.18"
 
 # Java 22 is the floor: that's where java.lang.foreign (Project Panama) was
