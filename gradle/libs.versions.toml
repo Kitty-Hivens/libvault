@@ -3,7 +3,7 @@
 # stay binary-compatible. 2.4.1 can be substituted once it is on the plugin
 # portal; the build does not depend on anything 2.4.1-only.
 kotlin = "2.4.0"
-slf4j  = "2.0.18"
+slf4j  = "2.0.19"
 
 # Java 22 is the floor: that's where java.lang.foreign (Project Panama) was
 # finalized as JEP 454. Earlier LTSes (17, 21) still have FFM in preview
