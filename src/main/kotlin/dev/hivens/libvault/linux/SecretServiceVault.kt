@@ -241,7 +241,9 @@ internal class SecretServiceVault private constructor(
         val c = conn ?: return
         while (open.get()) {
             try {
-                var task: Runnable? = tasks.poll(25, TimeUnit.MILLISECONDS)
+                // The queue wakes this thread the moment a task is offered, so
+                // the timeout is not the latency of anything this library does.
+                var task: Runnable? = tasks.poll(SIGNAL_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
                 while (task != null) {
                     runCatching { task.run() }
                     task = tasks.poll()
@@ -682,6 +684,21 @@ internal class SecretServiceVault private constructor(
 
     companion object {
         private val log: Logger = LoggerFactory.getLogger(SecretServiceVault::class.java)
+
+        /**
+         * How long the dispatch thread waits before pumping the bus again.
+         *
+         * It bounds nothing this library asks for: a task offered to the queue
+         * wakes the wait at once, and the unlock path does its own waiting on
+         * the connection. What it bounds is how long an incoming signal sits in
+         * the socket before it is read.
+         *
+         * It was twenty five, and that cost four wakeups a second for nothing:
+         * measured in a host carrying this library, the dispatch thread woke
+         * forty times a second and spent four times the CPU of the sibling tray
+         * library's, which waits a hundred.
+         */
+        private const val SIGNAL_POLL_INTERVAL_MS = 100L
 
         private const val SERVICE_NAME = "org.freedesktop.secrets"
         private const val SERVICE_PATH = "/org/freedesktop/secrets"
