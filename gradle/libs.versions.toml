@@ -16,7 +16,7 @@ javaTarget = "22"
 # Panama. Used only by the software-file fallback; the OS-keyring tiers never
 # touch it. VERIFY the latest at search.maven.org/artifact/org.bouncycastle/
 # bcprov-jdk18on and bump -- this is a starting point, not necessarily newest.
-bouncycastle = "1.84"
+bouncycastle = "1.85.2"
 
 # Test stack -- light. JUnit 5 + Kotest assertions for readable test code.
 junit  = "5.11.4"
