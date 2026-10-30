@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No permissions: the Keystore and the app's own files directory need none. -->
+<manifest />
