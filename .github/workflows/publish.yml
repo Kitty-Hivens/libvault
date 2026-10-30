@@ -55,15 +55,19 @@ jobs:
 
       # Central versions are immutable, and a reused one is rejected only at
       # the end of the upload -- after everything has been built and signed.
+      # All three artifacts go up together, so any one of them already there
+      # means the version is taken.
       - name: Guard the version
         env:
           VERSION: ${{ steps.version.outputs.v }}
         run: |
           v="$VERSION"
-          if curl -fsI -o /dev/null "https://repo1.maven.org/maven2/dev/hivens/libvault/$v/libvault-$v.pom"; then
-            echo "::error::dev.hivens:libvault:$v is already on Central -- versions are immutable"
-            exit 1
-          fi
+          for a in libvault libvault-core libvault-android; do
+            if curl -fsI -o /dev/null "https://repo1.maven.org/maven2/dev/hivens/$a/$v/$a-$v.pom"; then
+              echo "::error::dev.hivens:$a:$v is already on Central, and versions are immutable"
+              exit 1
+            fi
+          done
           echo "publishing $v"
 
       # The tag is what ships, so it is tested here rather than on the trust
