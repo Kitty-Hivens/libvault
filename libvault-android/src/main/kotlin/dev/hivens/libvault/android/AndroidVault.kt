@@ -15,7 +15,7 @@ import java.io.File
  * available store for a [VaultConfig] and use the returned [SecretVault]:
  *
  * ```
- * AndroidVault.open(context, VaultConfig(namespace = "dev.hivens.nexira")).use { vault ->
+ * AndroidVault.open(context, VaultConfig(namespace = "com.example.app")).use { vault ->
  *     vault.store("accessToken", token)
  *     val back = vault.retrieve("accessToken")
  * }

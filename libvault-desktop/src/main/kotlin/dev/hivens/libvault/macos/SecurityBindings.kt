@@ -13,9 +13,8 @@ import java.lang.invoke.MethodHandle
  * plus raw store/retrieve/delete/enumerate/describe marshalling keyed by
  * `(service, account)`. Items are generic passwords in the login Keychain.
  *
- * Ported and extended from the reviewed Aura/Nexira Keychain backend. Untested on
- * a physical Mac at write time -- the layouts follow Apple's documented C ABI and
- * the Linux/Windows peers cross-check the shape.
+ * Not yet run on a physical Mac. The layouts follow Apple's documented C ABI,
+ * and the Linux and Windows peers cross-check the shape.
  */
 internal class SecurityBindings private constructor(
     private val arena: Arena,

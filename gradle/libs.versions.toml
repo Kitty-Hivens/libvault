@@ -1,7 +1,4 @@
 [versions]
-# Pinned to the Nexira launcher's Kotlin so the cross-project Panama bindings
-# stay binary-compatible. 2.4.1 can be substituted once it is on the plugin
-# portal; the build does not depend on anything 2.4.1-only.
 kotlin = "2.4.21"
 slf4j  = "2.0.20"
 
@@ -15,9 +12,8 @@ javaTarget = "22"
 # bytecode level an Android build accepts. Raising it closes Android off.
 javaCoreTarget = "17"
 
-# Android Gradle Plugin, for libvault-android only. The same version the
-# Nexira catalog carries. minSdk 26 is where java.nio.file and java.time arrive,
-# and core's public API uses both.
+# Android Gradle Plugin, for libvault-android only. minSdk 26 is where
+# java.nio.file and java.time arrive, and core's public API uses both.
 agp               = "9.5.0"
 androidCompileSdk = "36"
 androidMinSdk     = "26"
