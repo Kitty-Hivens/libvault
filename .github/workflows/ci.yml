@@ -24,10 +24,22 @@ jobs:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           java-version: ${{ env.JAVA_VERSION }}
       - uses: gradle/actions/setup-gradle@v4
+
+      # The Linux backend speaks to a real Secret Service, and a runner has
+      # none. gnome-keyring is the one most desktops run.
+      - name: A Secret Service to test against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-keyring dbus libsecret-tools
+
       # Every module, the Android one included: the runner image carries an
       # Android SDK, so this compiles and lints the AAR as well.
+      # LIBVAULT_SECRET_SERVICE turns the Secret Service suite on, and makes a
+      # service that does not answer a failure rather than a skip.
       - name: Build + test
-        run: ./gradlew build --stacktrace
+        env:
+          LIBVAULT_SECRET_SERVICE: '1'
+        run: sh .github/scripts/with-secret-service.sh ./gradlew build --stacktrace
       - name: Upload test report on failure
         if: failure()
         uses: actions/upload-artifact@v4
