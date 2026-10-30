@@ -7,6 +7,12 @@ All notable changes to libvault are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
+Adds an Android backend and splits the library into three artifacts. Desktop
+consumers keep `dev.hivens:libvault` and need no change to their code. Fixes
+in the file tier and every desktop backend, two of which could lose secrets.
+
 ### Added
 
 - **Android.** `dev.hivens:libvault-android` and `AndroidVault.open(context, config)`.
@@ -31,6 +37,8 @@ All notable changes to libvault are documented here. The format follows
   `ServiceLoader` registration in `libvault`, so the two jars share no package
   and still run on the module path, as module `libvault`. A fat jar has to keep
   `META-INF/services/dev.hivens.libvault.internal.KeyringBackend`.
+- Dependencies: BouncyCastle 1.86, SLF4J 2.0.20, and Kotlin 2.4.21, whose
+  standard library consumers receive with the library.
 - Builds with Gradle 9.7.1.
 
 ### Fixed
@@ -62,7 +70,11 @@ All notable changes to libvault are documented here. The format follows
   releases the connection now, and ops still queued at close return their
   default value at once.
 - Linux, Windows and macOS: secret values no longer leave unzeroed plaintext
-  copies in scratch buffers on the way to and from the keyring.
+  copies in scratch buffers on the way to and from the keyring. PBKDF2's copy
+  of the machine seed is cleared as well.
+- `Vault.open` threw when the software file tier could not even be set up, for
+  a namespace that is no valid path on the platform. That tier is now skipped
+  like any other that did not open.
 
 ## [0.2.1] - 2026-06-19
 
