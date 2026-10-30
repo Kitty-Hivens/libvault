@@ -1,6 +1,5 @@
 package dev.hivens.libvault.linux
 
-import java.io.ByteArrayOutputStream
 import java.lang.foreign.Arena
 import java.lang.foreign.MemorySegment
 import java.lang.foreign.ValueLayout
@@ -70,10 +69,21 @@ internal fun DBusBindings.appendByteArray(call: Arena, iter: MemorySegment, byte
     val sig = call.allocateUtf8("y")
     val array = scratchIter(call)
     openContainer(iter, DBusBindings.DBUS_TYPE_ARRAY, sig, array)
-    val byteBuf = call.allocate(LAYOUT_BYTE)
-    for (b in bytes) {
-        byteBuf.set(LAYOUT_BYTE, 0, b)
-        dbusOk(handle("dbus_message_iter_append_basic").invokeExact(array, DBusBindings.DBUS_TYPE_BYTE.toInt(), byteBuf) as Int, "append_basic")
+    if (bytes.isNotEmpty()) {
+        val data = call.allocate(bytes.size.toLong())
+        try {
+            MemorySegment.copy(bytes, 0, data, LAYOUT_BYTE, 0, bytes.size)
+            // append_fixed_array takes the address of the array pointer, not the pointer.
+            val dataPtr = call.allocate(LAYOUT_ADDR)
+            dataPtr.set(LAYOUT_ADDR, 0, data)
+            dbusOk(
+                handle("dbus_message_iter_append_fixed_array")
+                    .invokeExact(array, DBusBindings.DBUS_TYPE_BYTE.toInt(), dataPtr, bytes.size) as Int,
+                "append_fixed_array",
+            )
+        } finally {
+            data.fill(0)
+        }
     }
     closeContainer(iter, array)
 }
@@ -210,14 +220,15 @@ internal fun DBusBindings.readByteArray(call: Arena, iter: MemorySegment): ByteA
     if (argType(iter) != DBusBindings.DBUS_TYPE_ARRAY) return null
     val sub = scratchIter(call)
     recurse(iter, sub)
-    val buffer = ByteArrayOutputStream()
-    val byteOut = call.allocate(LAYOUT_BYTE)
-    while (argType(sub) == DBusBindings.DBUS_TYPE_BYTE) {
-        handle("dbus_message_iter_get_basic").invokeExact(sub, byteOut) as Unit
-        buffer.write(byteOut.get(LAYOUT_BYTE, 0).toInt())
-        next(sub)
-    }
-    return buffer.toByteArray()
+    if (argType(sub) != DBusBindings.DBUS_TYPE_BYTE) return ByteArray(0)
+    val dataOut = call.allocate(LAYOUT_ADDR)
+    val countOut = call.allocate(ValueLayout.JAVA_INT)
+    handle("dbus_message_iter_get_fixed_array").invokeExact(sub, dataOut, countOut) as Unit
+    val count = countOut.get(ValueLayout.JAVA_INT, 0)
+    val data = dataOut.get(LAYOUT_ADDR, 0)
+    // The block points into the reply message, which the caller unrefs. It is
+    // copied out once, straight into the array the caller receives.
+    return if (count <= 0 || data.address() == 0L) ByteArray(0) else data.reinterpret(count.toLong()).toArray(LAYOUT_BYTE)
 }
 
 /** Read the `value` field (3rd) out of a `(oayays)` Secret struct at [iter]. */

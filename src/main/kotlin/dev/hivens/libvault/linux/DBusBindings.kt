@@ -104,6 +104,18 @@ internal class DBusBindings private constructor(
             Triple("dbus_message_iter_next", ValueLayout.JAVA_INT, listOf(ValueLayout.ADDRESS)),
             Triple("dbus_message_iter_get_arg_type", ValueLayout.JAVA_INT, listOf(ValueLayout.ADDRESS)),
             Triple("dbus_message_iter_get_basic", null, listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS)),
+            // Secret values cross as one block, so no per-byte scratch copy of
+            // the plaintext is left behind in native memory or on the heap.
+            Triple(
+                "dbus_message_iter_append_fixed_array",
+                ValueLayout.JAVA_INT,
+                listOf(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT),
+            ),
+            Triple(
+                "dbus_message_iter_get_fixed_array",
+                null,
+                listOf(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+            ),
 
             // Error API
             Triple("dbus_error_init", null, listOf(ValueLayout.ADDRESS)),
