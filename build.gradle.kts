@@ -74,7 +74,7 @@ subprojects {
     // workstation the same release is `./gradlew publishToMavenCentral
     // -PappVersion=X.Y.Z --no-configuration-cache`, signing through the keyring.
     // Pass the version either way: gradle.properties pins appVersion to a
-    // SNAPSHOT, so the git-describe fallback above never gets to run.
+    // placeholder, so the git-describe fallback above never gets to run.
     // automaticRelease then carries the deployment all the way through instead of
     // leaving it VALIDATED in the portal waiting for a manual Publish click.
     plugins.withId("com.vanniktech.maven.publish") {
@@ -99,6 +99,18 @@ subprojects {
                     url.set("https://github.com/Kitty-Hivens/libvault")
                     connection.set("scm:git:https://github.com/Kitty-Hivens/libvault.git")
                 }
+            }
+        }
+    }
+
+    // Central takes 9.9.9-TEST like any release, and a version there can never
+    // be withdrawn. So the placeholder is refused by the task that would send
+    // it to the Central repository, before anything is sent.
+    tasks.withType<PublishToMavenRepository>().configureEach {
+        val version = appVersion
+        doFirst {
+            if ((this as PublishToMavenRepository).repository.name == "mavenCentral" && version.endsWith("-TEST")) {
+                throw GradleException("appVersion $version is the local placeholder. Publish a release with -PappVersion=X.Y.Z")
             }
         }
     }
