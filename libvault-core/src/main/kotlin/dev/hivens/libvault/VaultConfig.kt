@@ -76,7 +76,8 @@ public data class VaultConfig(
      * this is a real, separately-lockable Secret Service collection (created if
      * absent). On Windows/macOS there is no per-collection store, so the name
      * becomes a logical sub-namespace folded into the entry key -- NOT a
-     * separately-lockable container. Null uses the platform default store.
+     * separately-lockable container. On Android it gets its own Keystore key
+     * and its own file. Null uses the platform default store.
      */
     public val collection: String? = null,
 

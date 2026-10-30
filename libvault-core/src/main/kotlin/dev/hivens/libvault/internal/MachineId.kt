@@ -2,6 +2,7 @@ package dev.hivens.libvault.internal
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
  * A stable, machine-and-user-local seed string for the [MachineBound][dev.hivens.libvault.KeyDerivation.MachineBound]
@@ -32,9 +33,9 @@ internal object MachineId {
      * well-formed even on a stripped host.
      */
     private fun stableHostId(): String {
-        readFirstLine(Path.of("/etc/machine-id"))?.let { return it }
-        readFirstLine(Path.of("/var/lib/dbus/machine-id"))?.let { return it }
-        readFirstLine(Path.of("/proc/sys/kernel/hostname"))?.let { return it }
+        readFirstLine(Paths.get("/etc/machine-id"))?.let { return it }
+        readFirstLine(Paths.get("/var/lib/dbus/machine-id"))?.let { return it }
+        readFirstLine(Paths.get("/proc/sys/kernel/hostname"))?.let { return it }
         sequenceOf("HOSTNAME", "COMPUTERNAME")
             .mapNotNull { System.getenv(it)?.trim()?.ifBlank { null } }
             .firstOrNull()

@@ -1,6 +1,7 @@
 package dev.hivens.libvault.internal
 
 import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
  * Resolves the default per-user data directory for the software-file tier when
@@ -18,13 +19,13 @@ internal object DataDir {
         return when {
             os.contains("win") -> {
                 val local = System.getenv("LOCALAPPDATA")?.ifBlank { null }
-                if (local != null) Path.of(local) else Path.of(home, "AppData", "Local")
+                if (local != null) Paths.get(local) else Paths.get(home, "AppData", "Local")
             }
             os.contains("mac") || os.contains("darwin") ->
-                Path.of(home, "Library", "Application Support")
+                Paths.get(home, "Library", "Application Support")
             else -> {
                 val xdg = System.getenv("XDG_DATA_HOME")?.ifBlank { null }
-                if (xdg != null) Path.of(xdg) else Path.of(home, ".local", "share")
+                if (xdg != null) Paths.get(xdg) else Paths.get(home, ".local", "share")
             }
         }
     }

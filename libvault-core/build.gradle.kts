@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.jvm)
     `java-library`
+    alias(libs.plugins.animalSniffer)
     alias(libs.plugins.mavenPublish)
     signing
 }
@@ -47,6 +48,14 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
     testRuntimeOnly(libs.slf4j.simple)
     testImplementation(libs.kotest.assertions)
+
+    // The Android API at minSdk, as Animal Sniffer reads it. See the catalog.
+    signature(variantOf(libs.android.api.signature) { artifactType("signature") })
+}
+
+animalsniffer {
+    // Main only: the tests run on a desktop JVM and may use anything.
+    sourceSets = listOf(project.sourceSets.main.get())
 }
 
 mavenPublishing {

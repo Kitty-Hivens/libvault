@@ -9,6 +9,10 @@ import java.nio.charset.StandardCharsets
  * UTF-8 transcoding for text secrets that never lets the plaintext settle into
  * an immutable [String] (which would linger on the heap until GC, unzeroable).
  * Everything flows through scratch buffers the caller can wipe.
+ *
+ * The scratch buffers are heap arrays and are read and wiped through
+ * `array()`. The Buffer methods that return their own type (`flip`, `clear`)
+ * do so only from Java 9, and Android below API 34 has just the `Buffer` ones.
  */
 internal object SecretText {
 
@@ -23,12 +27,10 @@ internal object SecretText {
         )
         encoder.encode(charBuf, byteBuf, true)
         encoder.flush(byteBuf)
-        val out = ByteArray(byteBuf.position())
-        byteBuf.flip()
-        byteBuf.get(out)
+        val scratch = byteBuf.array()
+        val out = scratch.copyOf(byteBuf.position())
         // Wipe the over-allocated scratch buffer so no UTF-8 tail survives in it.
-        byteBuf.clear()
-        while (byteBuf.hasRemaining()) byteBuf.put(0)
+        scratch.fill(0)
         return out
     }
 
@@ -43,12 +45,10 @@ internal object SecretText {
         )
         decoder.decode(byteBuf, charBuf, true)
         decoder.flush(charBuf)
-        val out = CharArray(charBuf.position())
-        charBuf.flip()
-        charBuf.get(out)
+        val scratch = charBuf.array()
+        val out = scratch.copyOf(charBuf.position())
         // Wipe the scratch char buffer.
-        charBuf.clear()
-        while (charBuf.hasRemaining()) charBuf.put('\u0000')
+        scratch.fill('\u0000')
         return out
     }
 }
