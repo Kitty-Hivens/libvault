@@ -66,7 +66,7 @@ internal class SecretServiceVault private constructor(
     private val open = AtomicBoolean(true)
     private val tornDown = AtomicBoolean(false)
     private val setupResult = CompletableFuture<VaultAvailability>()
-    private val tasks = LinkedBlockingQueue<Runnable>()
+    private val tasks = LinkedBlockingQueue<Task<*>>()
     private val watchers = CopyOnWriteArrayList<(VaultChange) -> Unit>()
 
     // Touched only on the dispatch thread (setup + ops + signal drain all run there).
@@ -152,19 +152,41 @@ internal class SecretServiceVault private constructor(
         return AutoCloseable { watchers.remove(callback) }
     }
 
+    /**
+     * Stops the dispatch thread and waits a bounded time for it to release the
+     * connection. The connection is torn down by that thread alone: a thread
+     * still inside a blocking libdbus call when the wait runs out would
+     * otherwise race a teardown from here on the same connection and arena.
+     */
     override fun close() {
         if (!open.compareAndSet(true, false)) return
+        // A watch callback runs on the dispatch thread, and may close the vault.
+        if (Thread.currentThread() === dispatchThread) return
         runCatching { dispatchThread.join(replyTimeoutMs.toLong() + 1_000) }
-        teardown()
+    }
+
+    /** One queued op, and the value its caller gets if the vault closes before it runs. */
+    private class Task<T>(private val op: () -> T, private val default: T) {
+        val future = CompletableFuture<T>()
+
+        fun run() {
+            future.complete(runCatching { op() }.getOrElse { log.warn("op failed: {}", it.message); default })
+        }
+
+        fun abandon() {
+            future.complete(default)
+        }
     }
 
     private fun <T> bounded(default: T, timeoutMs: Int, op: () -> T): T = bounded(default, timeoutMs.toLong(), op)
 
     private fun <T> bounded(default: T, timeoutMs: Long, op: () -> T): T {
         if (!open.get()) return default
-        val future = CompletableFuture<T>()
-        tasks.add(Runnable { future.complete(runCatching { op() }.getOrElse { log.warn("op failed: {}", it.message); default }) })
-        return runCatching { future.get(timeoutMs, TimeUnit.MILLISECONDS) }.getOrElse { e ->
+        val task = Task(op, default)
+        tasks.add(task)
+        // close() may have drained the queue between the check above and the add.
+        if (!open.get() && tasks.remove(task)) return default
+        return runCatching { task.future.get(timeoutMs, TimeUnit.MILLISECONDS) }.getOrElse { e ->
             // Restore the interrupt flag so a cancelled caller still sees it.
             if (e is InterruptedException) Thread.currentThread().interrupt()
             if (e is TimeoutException) {
@@ -181,17 +203,18 @@ internal class SecretServiceVault private constructor(
     private fun run() {
         try {
             doSetup()
-            if (!open.get()) {
-                teardown()
-                return
-            }
-            dispatchLoop()
+            if (open.get()) dispatchLoop()
         } catch (t: Throwable) {
             // An unexpected throw on the dispatch thread (e.g. a Panama
-            // WrongMethodType, OOM) must still complete setup and free the arena,
-            // or create() waits the full budget and the libdbus handle leaks.
+            // WrongMethodType, OOM) must still complete setup, or create()
+            // waits the full budget.
             log.warn("secret-service dispatch thread crashed: {}", t.message ?: t.javaClass.simpleName)
             runCatching { failSetup(VaultAvailability.ServiceUnavailable) }
+        } finally {
+            // Callers first: teardown closes the session over the bus and can
+            // take up to a reply timeout of its own.
+            generateSequence { tasks.poll() }.forEach { it.abandon() }
+            // The only place the connection is released, see close().
             teardown()
         }
     }
@@ -243,11 +266,14 @@ internal class SecretServiceVault private constructor(
             try {
                 // The queue wakes this thread the moment a task is offered, so
                 // the timeout is not the latency of anything this library does.
-                var task: Runnable? = tasks.poll(SIGNAL_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
-                while (task != null) {
-                    runCatching { task.run() }
+                var task: Task<*>? = tasks.poll(SIGNAL_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
+                // Once closed, what is left in the queue is abandoned on the
+                // way out rather than run against a vault that has closed.
+                while (task != null && open.get()) {
+                    task.run()
                     task = tasks.poll()
                 }
+                task?.abandon()
                 readWrite.invokeExact(c, 0) as Int
                 drainSignals()
             } catch (t: Throwable) {
@@ -691,12 +717,8 @@ internal class SecretServiceVault private constructor(
          * It bounds nothing this library asks for: a task offered to the queue
          * wakes the wait at once, and the unlock path does its own waiting on
          * the connection. What it bounds is how long an incoming signal sits in
-         * the socket before it is read.
-         *
-         * It was twenty five, and that cost four wakeups a second for nothing:
-         * measured in a host carrying this library, the dispatch thread woke
-         * forty times a second and spent four times the CPU of the sibling tray
-         * library's, which waits a hundred.
+         * the socket before it is read, so it trades watch latency against idle
+         * wakeups. A hundred is what the sibling tray library waits.
          */
         private const val SIGNAL_POLL_INTERVAL_MS = 100L
 
