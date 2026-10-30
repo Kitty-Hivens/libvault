@@ -42,10 +42,12 @@ internal object KdfEngine {
 
     fun deriveMachineBound(salt: ByteArray): ByteArray {
         val seed = MachineId.seed().toCharArray()
+        // PBEKeySpec keeps its own copy of the password until told otherwise.
+        val spec = PBEKeySpec(seed, salt, PBKDF2_ITERATIONS, KEY_LEN_BITS)
         return try {
-            val spec = PBEKeySpec(seed, salt, PBKDF2_ITERATIONS, KEY_LEN_BITS)
             SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         } finally {
+            spec.clearPassword()
             seed.fill('\u0000')
         }
     }
