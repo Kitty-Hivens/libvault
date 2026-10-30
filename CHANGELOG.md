@@ -4,6 +4,58 @@ All notable changes to libvault are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Android.** `dev.hivens:libvault-android` and `AndroidVault.open(context, config)`.
+  The OS keyring tier on Android encrypts secrets with AES-256-GCM under a
+  non-exportable Android Keystore key and keeps only the ciphertext, in the
+  app's no-backup directory. Same API, tiers, timeouts and failure model as
+  the desktop library. A collection gets its own key and file. minSdk 26.
+- **`dev.hivens:libvault-core`.** The API, the file, memory and none tiers and
+  the backend selection, built for Java 17 with no Panama in it. Both
+  `libvault` and `libvault-android` depend on it, so a desktop consumer's
+  dependency and imports stay as they were.
+
+### Changed
+
+- The software file tier rereads the file when it changed on disk, and writes
+  under an exclusive lock on a sibling `.lock` file. `opTimeoutMs` bounds the
+  wait for that lock.
+- Linux: the dispatch thread waits 100 ms instead of 25 ms between bus pumps
+  when idle. Calls made through the library were never delayed by it, only
+  the delivery of incoming signals.
+- `Vault` lives in `libvault-core` and finds the desktop keyrings through a
+  `ServiceLoader` registration in `libvault`, so the two jars share no package
+  and still run on the module path, as module `libvault`. A fat jar has to keep
+  `META-INF/services/dev.hivens.libvault.internal.KeyringBackend`.
+- Builds with Gradle 9.7.1.
+
+### Fixed
+
+- The software file tier silently replaced a file it could not open (a
+  mistyped passphrase, a changed machine id, hostname or home directory, a
+  corrupt or newer file) on the first store, losing every secret in it. Such
+  a file is now moved to `<name>.unreadable-<UTC time>` and a new one started.
+- Two vaults on one file, in one process or in several, dropped each other's
+  records on every write. Writes now reread the file under the lock.
+- Windows: a vault without a collection listed every collection's entries as
+  its own keys, and `clear()` deleted them. Entries now record their scope in
+  the credential's UserName. Entries written before carry none: operations on
+  one exact key use them as they always did and a store claims them, while
+  `list()` and `clear()` attribute them by name, a slash after the namespace
+  meaning a collection.
+- Windows: a store refuses to overwrite a target that belongs to another
+  scope instead of destroying its secret.
+- macOS: storing an existing key with a new label kept the old label.
+- Linux: `close()` could tear the D-Bus connection down while the dispatch
+  thread was still inside a blocking call on it. Only the dispatch thread
+  releases the connection now, and ops still queued at close return their
+  default value at once.
+- Linux, Windows and macOS: secret values no longer leave unzeroed plaintext
+  copies in scratch buffers on the way to and from the keyring.
+
 ## [0.2.1]
 
 ### Fixed
