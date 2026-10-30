@@ -37,7 +37,7 @@ class VaultConfigTest {
 
     @Test
     fun `defaults are the common case -- keyring then software file`() {
-        val config = VaultConfig(namespace = "dev.hivens.nexira")
+        val config = VaultConfig(namespace = "com.example.app")
         config.allowSoftwareFallback shouldBe true
         config.preferredTiers shouldBe listOf(VaultTier.OsKeyring, VaultTier.SoftwareFile)
         config.keyDerivation shouldBe KeyDerivation.MachineBound

@@ -49,7 +49,7 @@ vault is the same on both.
 import dev.hivens.libvault.Vault
 import dev.hivens.libvault.VaultConfig
 
-Vault.open(VaultConfig(namespace = "dev.hivens.nexira")).use { vault ->
+Vault.open(VaultConfig(namespace = "com.example.app")).use { vault ->
     vault.store("accessToken", tokenBytes)          // upsert
     val token = vault.retrieve("accessToken")       // null if absent/unreachable
     vault.delete("accessToken")
@@ -73,7 +73,7 @@ The same, with a `Context`:
 ```kotlin
 import dev.hivens.libvault.android.AndroidVault
 
-AndroidVault.open(context, VaultConfig(namespace = "dev.hivens.nexira")).use { vault ->
+AndroidVault.open(context, VaultConfig(namespace = "com.example.app")).use { vault ->
     vault.store("accessToken", tokenBytes)
 }
 ```
@@ -131,7 +131,7 @@ calling this each run.
 
 ```kotlin
 VaultConfig(
-    namespace = "dev.hivens.nexira",      // scopes every key; required, non-blank
+    namespace = "com.example.app",        // scopes every key; required, non-blank
     allowSoftwareFallback = true,         // false = OS keyring or nothing
     softwareFilePath = null,              // null -> OS data dir / namespace / vault.bin
     keyDerivation = KeyDerivation.MachineBound,   // or Passphrase(chars)

@@ -11,7 +11,7 @@ public data class VaultConfig(
     /**
      * Application identity that scopes every key. Maps to the Secret Service
      * `app` attribute, the Credential Manager target prefix, and the Keychain
-     * service. Use a stable reverse-DNS id, e.g. `"dev.hivens.nexira"`. Two apps
+     * service. Use a stable reverse-DNS id, e.g. `"com.example.app"`. Two apps
      * with different namespaces never see each other's keys. Must be non-blank.
      */
     public val namespace: String,

@@ -10,7 +10,7 @@ import java.util.ServiceLoader
  * the returned [SecretVault]:
  *
  * ```
- * Vault.open(VaultConfig(namespace = "dev.hivens.nexira")).use { vault ->
+ * Vault.open(VaultConfig(namespace = "com.example.app")).use { vault ->
  *     vault.store("accessToken", token)
  *     val back = vault.retrieve("accessToken")
  * }
