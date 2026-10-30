@@ -71,9 +71,10 @@ internal class SecurityBindings private constructor(
 
                 val addKeys = mutableListOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount, c.kSecValueData)
                 val addVals = mutableListOf(c.kSecClassGenericPassword, serviceCF, accountCF, dataCF)
-                if (label != null) {
+                val labelCF = label?.let { cfString(call, it).also { ref -> refs += ref } }
+                if (labelCF != null) {
                     addKeys += c.kSecAttrLabel
-                    addVals += cfString(call, label).also { refs += it }
+                    addVals += labelCF
                 }
                 val accessible = c.kSecAttrAccessible
                 val accessibleVal = c.accessibleValues[accessibilityName]
@@ -91,7 +92,14 @@ internal class SecurityBindings private constructor(
                         arrayOf(c.kSecClass, c.kSecAttrService, c.kSecAttrAccount),
                         arrayOf(c.kSecClassGenericPassword, serviceCF, accountCF),
                     ).also { refs += it }
-                    val updates = cfDictionary(call, arrayOf(c.kSecValueData), arrayOf(dataCF)).also { refs += it }
+                    // A store without a label leaves the existing one alone.
+                    val updateKeys = mutableListOf(c.kSecValueData)
+                    val updateVals = mutableListOf(dataCF)
+                    if (labelCF != null) {
+                        updateKeys += c.kSecAttrLabel
+                        updateVals += labelCF
+                    }
+                    val updates = cfDictionary(call, updateKeys.toTypedArray(), updateVals.toTypedArray()).also { refs += it }
                     status = secItemUpdate.invokeExact(locator, updates) as Int
                 }
                 status == ERR_SUCCESS
@@ -225,7 +233,12 @@ internal class SecurityBindings private constructor(
     private fun cfData(call: Arena, bytes: ByteArray): MemorySegment {
         val buf = call.allocate(bytes.size.toLong().coerceAtLeast(1))
         if (bytes.isNotEmpty()) MemorySegment.copy(bytes, 0, buf, ValueLayout.JAVA_BYTE, 0, bytes.size)
-        return cfDataCreate.invokeExact(MemorySegment.NULL, buf, bytes.size.toLong()) as MemorySegment
+        return try {
+            cfDataCreate.invokeExact(MemorySegment.NULL, buf, bytes.size.toLong()) as MemorySegment
+        } finally {
+            // CFDataCreate copied the bytes. The scratch copy is a secret too.
+            buf.fill(0)
+        }
     }
 
     private fun cfDictionary(call: Arena, keys: Array<MemorySegment>, values: Array<MemorySegment>): MemorySegment {
