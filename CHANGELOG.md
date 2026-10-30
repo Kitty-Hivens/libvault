@@ -1,8 +1,9 @@
 # Changelog
 
 All notable changes to libvault are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release is a
+`vX.Y.Z` tag, and its GitHub release carries that version's section below.
 
 ## [Unreleased]
 
@@ -56,47 +57,47 @@ All notable changes to libvault are documented here. The format follows
 - Linux, Windows and macOS: secret values no longer leave unzeroed plaintext
   copies in scratch buffers on the way to and from the keyring.
 
-## [0.2.1]
+## [0.2.1] - 2026-06-19
 
 ### Fixed
 
 - Linux: the Secret Service backend opens a private D-Bus connection
   (`dbus_bus_get_private`) instead of the process-shared `dbus_bus_get`
-  one. A shared connection has a single incoming-message queue; another
+  one. A shared connection has a single incoming-message queue, so another
   libdbus user in the same process that runs its own
   `dbus_connection_pop_message` loop (a tray or notification library)
-  could pop -- and drop -- messages destined for this backend, and vice
+  could pop, and drop, messages destined for this backend, and vice
   versa. A private connection is drained solely by our own dispatch
   thread. `teardown()` now closes the private connection before the
   final unref. (`exit_on_disconnect` was already disabled.)
 
-## [0.2.0]
+## [0.2.0] - 2026-06-17
 
-A comprehensive capability pass. Everything is additive -- 0.1.0 callers compile
-and behave unchanged; the new features live on opt-in sub-interfaces discovered
+A comprehensive capability pass. Everything is additive: 0.1.0 callers compile
+and behave unchanged. The new features live on opt-in sub-interfaces discovered
 via `as?` (`vault.asEnumerable()`, `asUnlockable()`, ...), so the five-method
 `SecretVault` base stays the same.
 
 ### Added
 
-- **Diagnostics** -- `Vault.probe(config): List<VaultStatus>` classifies each
+- **Diagnostics.** `Vault.probe(config): List<VaultStatus>` classifies each
   tier without opening a live vault, distinguishing a *locked* keyring
-  (`VaultAvailability.Locked` -- offer unlock) from an *absent* one
-  (`ServiceUnavailable` -- don't). Non-interactive.
-- **Enumeration** -- `EnumerableVault { list(); clear() }`.
-- **Metadata** -- `DescribableVault { describe(key): EntryMetadata? }`
+  (`VaultAvailability.Locked`, offer an unlock) from an *absent* one
+  (`ServiceUnavailable`, don't). Non-interactive.
+- **Enumeration.** `EnumerableVault { list(); clear() }`.
+- **Metadata.** `DescribableVault { describe(key): EntryMetadata? }`
   (label / created / modified / attributes).
-- **Labels + attributes on store** -- `LabeledVault.store(key, secret, label, attributes)`.
-- **Interactive unlock / lock** (opt-in) -- `UnlockableVault { isLocked(); unlock(); lock() }`
+- **Labels + attributes on store.** `LabeledVault.store(key, secret, label, attributes)`.
+- **Interactive unlock / lock** (opt-in). `UnlockableVault { isLocked(); unlock(); lock() }`
   and `VaultConfig.unlockPolicy = IfLocked` / `unlockTimeoutMs`. Linux surfaces
-  the Secret Service prompt and waits for `Completed`; Windows/macOS unlock with
+  the Secret Service prompt and waits for `Completed`. Windows/macOS unlock with
   the login session (no-op). Default `Vault.open` never prompts.
-- **Change-watch** -- `WatchableVault.onWatch(cb)` delivering `VaultChange` from
+- **Change-watch.** `WatchableVault.onWatch(cb)` delivering `VaultChange` from
   Secret Service item signals on Linux (inert on Windows/macOS).
-- **Tier migration** -- `MigratableVault.migrateTo(target, deleteAfter): MigrationReport`.
-- **Custom collections** -- `VaultConfig.collection` + `Vault.collections(config)`.
-  A real named collection on Linux; a logical key prefix on Windows/macOS.
-- **macOS accessibility** -- `VaultConfig.accessibility` (`kSecAttrAccessible*`).
+- **Tier migration.** `MigratableVault.migrateTo(target, deleteAfter): MigrationReport`.
+- **Custom collections.** `VaultConfig.collection` + `Vault.collections(config)`.
+  A real named collection on Linux, a logical key prefix on Windows/macOS.
+- **macOS accessibility.** `VaultConfig.accessibility` (`kSecAttrAccessible*`).
 
 ### Changed
 
@@ -115,15 +116,15 @@ via `as?` (`vault.asEnumerable()`, `asUnlockable()`, ...), so the five-method
 
 - Initial library: `Vault.open(VaultConfig)` returning a tiered `SecretVault`.
 - OS-keyring backends over pure Project Panama:
-  - Linux/BSD -- Freedesktop Secret Service over `libdbus-1` (no runtime
+  - Linux/BSD: Freedesktop Secret Service over `libdbus-1` (no runtime
     libsecret, no dbus-java).
-  - Windows -- Credential Manager / DPAPI over `Advapi32`.
-  - macOS -- Keychain Services over `Security.framework`.
+  - Windows: Credential Manager / DPAPI over `Advapi32`.
+  - macOS: Keychain Services over `Security.framework`.
 - AES-256-GCM software-file fallback: versioned header, per-record nonce,
   key-bound AAD, verifier block, atomic writes. MachineBound (PBKDF2) and
   Passphrase (Argon2id) key derivation.
 - Memory and None tiers.
-- Per-operation and backend-selection timeouts; a locked or wedged keyring
+- Per-operation and backend-selection timeouts. A locked or wedged keyring
   degrades instead of blocking. On a locked collection the backend declines to
   prompt and falls back.
 - `storeString` / `retrieveString` that keep text secrets out of interned
