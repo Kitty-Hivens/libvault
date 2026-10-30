@@ -43,8 +43,10 @@ public data class VaultConfig(
     /**
      * Ceiling, in milliseconds, on a single store/retrieve/delete/contains
      * against an OS keyring. An operation that overruns degrades to
-     * false/null rather than blocking the caller. The software-file and memory
-     * tiers are local and synchronous; this bound does not apply to them.
+     * false/null rather than blocking the caller. The software-file tier is
+     * local and synchronous, and here this bounds only how long a write waits
+     * for another process (or vault) writing the same file. The memory tier
+     * never waits.
      */
     public val opTimeoutMs: Long = 2000,
 

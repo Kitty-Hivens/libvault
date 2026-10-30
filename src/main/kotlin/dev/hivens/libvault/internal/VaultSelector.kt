@@ -92,7 +92,7 @@ internal object VaultSelector {
 
     private fun openSoftware(config: VaultConfig): SecretVault {
         val path = config.softwareFilePath ?: DataDir.resolve(config.namespace)
-        return SoftwareFileVault.open(path, config.keyDerivation)
+        return SoftwareFileVault.open(path, config.keyDerivation, config.opTimeoutMs)
     }
 
     private fun announce(vault: SecretVault): SecretVault {
