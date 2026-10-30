@@ -25,8 +25,8 @@ class CapabilityTest {
     // ── Discovery ──────────────────────────────────────────────────────────────
 
     @Test
-    fun `memory and file tiers advertise enumerate, describe, label and migrate -- not unlock or watch`() {
-        for (vault in listOf(memory())) {
+    fun `memory and file tiers advertise enumerate, describe, label and migrate -- not unlock or watch`(@TempDir dir: Path) {
+        for (vault in listOf(memory(), software(dir))) {
             vault.asEnumerable() shouldNotBe null
             vault.asDescribable() shouldNotBe null
             vault.asLabeled() shouldNotBe null
