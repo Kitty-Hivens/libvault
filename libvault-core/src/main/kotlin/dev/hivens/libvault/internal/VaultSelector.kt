@@ -31,7 +31,7 @@ public object VaultSelector {
             }
             if (vault != null) return announce(vault)
         }
-        val floor = if (config.allowSoftwareFallback) openSoftware(config) else NoneVault
+        val floor = (if (config.allowSoftwareFallback) openSoftware(config) else null) ?: NoneVault
         return announce(floor)
     }
 
@@ -66,9 +66,13 @@ public object VaultSelector {
             ProbeResult.Unavailable(VaultAvailability.LibraryUnavailable)
         }
 
-    private fun openSoftware(config: VaultConfig): SecretVault {
+    /** Null when the file vault cannot even be set up, e.g. a namespace that is no valid path here. */
+    private fun openSoftware(config: VaultConfig): SecretVault? = runCatching {
         val path = config.softwareFilePath ?: DataDir.resolve(config.namespace)
-        return EncryptedFileVault.openSoftware(path, config.keyDerivation, config.opTimeoutMs)
+        EncryptedFileVault.openSoftware(path, config.keyDerivation, config.opTimeoutMs)
+    }.getOrElse {
+        log.warn("software file tier unavailable: {}", it.message ?: it.javaClass.simpleName)
+        null
     }
 
     private fun announce(vault: SecretVault): SecretVault {
