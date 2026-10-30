@@ -77,6 +77,7 @@ internal class SecretServiceVault private constructor(
     private var activePromptPath: String? = null
     private var unlockSignalled = false
     private var unlockGranted = false
+    private var reportedLocked = false
     private val itemKeyCache = ConcurrentHashMap<String, String>()
 
     private val dispatchThread = Thread({ run() }, "libvault-secretservice-${ProcessHandle.current().pid()}")
@@ -93,31 +94,36 @@ internal class SecretServiceVault private constructor(
     override fun store(key: String, secret: ByteArray, label: String?, attributes: Map<String, String>): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
         return bounded(false, replyTimeoutMs) {
-            createItemImpl(key, label ?: "$namespace/$key", attributes, secret)
+            unlockedNow() && createItemImpl(key, label ?: "$namespace/$key", attributes, secret)
         }
     }
 
     override fun retrieve(key: String): ByteArray? {
         require(key.isNotBlank()) { "key must be non-blank" }
-        return bounded(null, replyTimeoutMs) { retrieveImpl(key) }
+        return bounded(null, replyTimeoutMs) { if (unlockedNow()) retrieveImpl(key) else null }
     }
 
     override fun delete(key: String): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
-        return bounded(false, replyTimeoutMs) { deleteImpl(key) }
+        return bounded(false, replyTimeoutMs) { unlockedNow() && deleteImpl(key) }
     }
 
     override fun contains(key: String): Boolean {
         require(key.isNotBlank()) { "key must be non-blank" }
         return bounded(false, replyTimeoutMs) {
-            val (u, l) = searchItems(attrsOf(key)) ?: return@bounded false
-            (u + l).isNotEmpty()
+            // Retrievable, as the contract says: an item only a locked
+            // collection holds is not.
+            if (!unlockedNow()) return@bounded false
+            val (unlocked, _) = searchItems(attrsOf(key)) ?: return@bounded false
+            unlocked.isNotEmpty()
         }
     }
 
+    // Listing and describing read item attributes, which a locked collection
+    // still gives out, so they do not need it unlocked.
     override fun list(): List<String> = bounded(emptyList(), replyTimeoutMs) { listKeys() }
 
-    override fun clear(): Int = bounded(-1, replyTimeoutMs) { clearImpl() }
+    override fun clear(): Int = bounded(-1, replyTimeoutMs) { if (unlockedNow()) clearImpl() else -1 }
 
     override fun describe(key: String): EntryMetadata? {
         require(key.isNotBlank()) { "key must be non-blank" }
@@ -359,14 +365,42 @@ internal class SecretServiceVault private constructor(
 
     private fun attrsOf(key: String): List<Pair<String, String>> = listOf(ATTR_APP to namespace, ATTR_KEY to key)
 
+    /**
+     * Whether the collection is unlocked at this moment, unlocking it where the
+     * service does that without a prompt. A collection can lock at any time
+     * (an idle timeout, a screen lock, another client), so what setup saw says
+     * nothing about the next operation. A prompt is never raised here: it is
+     * dismissed and the operation fails, since only [unlock] may show one.
+     */
+    private fun unlockedNow(): Boolean {
+        val prompt = serviceUnlock(listOf(collection)) ?: return false
+        if (prompt == NO_OBJECT) {
+            reportedLocked = false
+            return true
+        }
+        dismissPrompt(prompt)
+        // Once per locking, not once per operation.
+        if (!reportedLocked) log.info("secret-service collection {} is locked, operations fail until it is unlocked", collection)
+        reportedLocked = true
+        return false
+    }
+
     private fun createItemImpl(key: String, label: String, userAttrs: Map<String, String>, secret: ByteArray): Boolean {
         val attrs = attrsOf(key) + userAttrs.filterKeys { it != ATTR_APP && it != ATTR_KEY }.toList()
         val (item, prompt) = createItem(collection, label, attrs, secret) ?: return false
-        if (prompt == NO_OBJECT && item != NO_OBJECT) {
-            itemKeyCache[item] = key
-            return true
+        if (prompt != NO_OBJECT || item == NO_OBJECT) return false
+        // An item path is no proof the secret can be had back. gnome-keyring
+        // files an item into a collection that locked in the meantime, keeps
+        // it in memory only, and never returns its secret. Read it back.
+        val back = getSecret(item)
+        val stored = back != null && back.contentEquals(secret)
+        back?.fill(0)
+        if (!stored) {
+            log.warn("secret-service took '{}' but does not give it back, reporting the store as failed", key)
+            return false
         }
-        return false
+        itemKeyCache[item] = key
+        return true
     }
 
     private fun retrieveImpl(key: String): ByteArray? {
@@ -541,6 +575,10 @@ internal class SecretServiceVault private constructor(
             }
         },
     )
+
+    private fun dismissPrompt(promptPath: String) {
+        transact<Unit>(promptPath, IFACE_PROMPT, "Dismiss", buildArgs = { _, _ -> }, readReply = { _, _, _ -> Unit })
+    }
 
     private fun lockImpl(paths: List<String>): String? = transact(
         SERVICE_PATH, IFACE_SERVICE, "Lock",

@@ -49,6 +49,13 @@ All notable changes to libvault are documented here. The format follows
   meaning a collection.
 - Windows: a store refuses to overwrite a target that belongs to another
   scope instead of destroying its secret.
+- Linux: the collection's lock state was checked once, at open. A collection
+  that locked afterwards (an idle timeout, a screen lock) took every store as
+  a success while gnome-keyring kept the item in memory only, and every read
+  came back empty. Each store, retrieve, contains, delete and clear now
+  checks the collection first, unlocking it where the service does that
+  without a prompt, and fails without prompting otherwise. A store also reads
+  the secret back before it reports success.
 - macOS: storing an existing key with a new label kept the old label.
 - Linux: `close()` could tear the D-Bus connection down while the dispatch
   thread was still inside a blocking call on it. Only the dispatch thread
