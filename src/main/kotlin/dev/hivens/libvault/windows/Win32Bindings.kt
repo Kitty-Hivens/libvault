@@ -33,15 +33,21 @@ internal class Win32Bindings private constructor(
     private val credFree: MethodHandle,
 ) {
 
-    /** Metadata read alongside a credential: its comment (label) and last-written time. */
-    class Meta(val comment: String?, val lastWrittenMillis: Long)
+    /**
+     * One credential as read back. [blob] is null unless the read asked for the
+     * secret, and the caller owns (and should zero) it.
+     */
+    class Credential(val userName: String, val comment: String?, val lastWrittenMillis: Long, val blob: ByteArray?)
 
-    fun write(target: String, secret: ByteArray, comment: String?): Boolean = Arena.ofConfined().use { call ->
-        runCatching {
+    /** A target name with the UserName stored beside it, as [enumerate] lists them. */
+    class Listed(val target: String, val userName: String)
+
+    fun write(target: String, secret: ByteArray, comment: String?, userName: String): Boolean = Arena.ofConfined().use { call ->
+        val secretSeg = call.allocate(secret.size.toLong().coerceAtLeast(1))
+        try {
             val targetSeg = call.allocateUtf16LE(target)
             val commentSeg = comment?.let { call.allocateUtf16LE(it) } ?: MemorySegment.NULL
-            val userName = call.allocateUtf16LE("")
-            val secretSeg = call.allocate(secret.size.toLong().coerceAtLeast(1))
+            val userNameSeg = call.allocateUtf16LE(userName)
             if (secret.isNotEmpty()) {
                 MemorySegment.copy(secret, 0, secretSeg, ValueLayout.JAVA_BYTE, 0, secret.size)
             }
@@ -59,28 +65,34 @@ internal class Win32Bindings private constructor(
             cred.set(ValueLayout.JAVA_INT, 52, 0)
             cred.set(ValueLayout.ADDRESS, 56, MemorySegment.NULL)
             cred.set(ValueLayout.ADDRESS, 64, MemorySegment.NULL)
-            cred.set(ValueLayout.ADDRESS, 72, userName)
+            cred.set(ValueLayout.ADDRESS, 72, userNameSeg)
 
             (credWrite.invokeExact(cred, FLAGS_NONE) as Int) != 0
-        }.getOrDefault(false)
-    }
-
-    fun read(target: String): ByteArray? = withCredential(target) { cred ->
-        val blobSize = cred.get(ValueLayout.JAVA_INT, 32)
-        val blobPtr = cred.get(ValueLayout.ADDRESS, 40)
-        if (blobSize > 0 && blobPtr.address() != 0L) {
-            blobPtr.reinterpret(blobSize.toLong()).toArray(ValueLayout.JAVA_BYTE)
-        } else {
-            ByteArray(0)
+        } catch (t: Throwable) {
+            false
+        } finally {
+            secretSeg.fill(0)
         }
     }
 
-    fun readMeta(target: String): Meta? = withCredential(target) { cred ->
+    /** The credential under [target], with its secret only when [withSecret]. Null when absent or on fault. */
+    fun read(target: String, withSecret: Boolean): Credential? = withCredential(target) { cred ->
         val commentPtr = cred.get(ValueLayout.ADDRESS, 16)
         val comment = if (commentPtr.address() != 0L) readUtf16(commentPtr) else null
         val low = cred.get(ValueLayout.JAVA_INT, 24).toLong() and 0xFFFFFFFFL
         val high = cred.get(ValueLayout.JAVA_INT, 28).toLong() and 0xFFFFFFFFL
-        Meta(comment, fileTimeToMillis((high shl 32) or low))
+        val blob = if (withSecret) {
+            val blobSize = cred.get(ValueLayout.JAVA_INT, 32)
+            val blobPtr = cred.get(ValueLayout.ADDRESS, 40)
+            if (blobSize > 0 && blobPtr.address() != 0L) {
+                blobPtr.reinterpret(blobSize.toLong()).toArray(ValueLayout.JAVA_BYTE)
+            } else {
+                ByteArray(0)
+            }
+        } else {
+            null
+        }
+        Credential(userNameOf(cred), comment, fileTimeToMillis((high shl 32) or low), blob)
     }
 
     fun delete(target: String): Boolean = Arena.ofConfined().use { call ->
@@ -90,26 +102,26 @@ internal class Win32Bindings private constructor(
         }.getOrDefault(false)
     }
 
-    /** Full target names matching the wildcard [filter] (e.g. the namespace prefix). Empty on fault. */
-    fun enumerate(filter: String): List<String> = Arena.ofConfined().use { call ->
+    /** Credentials whose target matches the wildcard [filter] (e.g. the namespace prefix). Empty on fault. */
+    fun enumerate(filter: String): List<Listed> = Arena.ofConfined().use { call ->
         runCatching {
             val filterSeg = call.allocateUtf16LE(filter)
             val countOut = call.allocate(ValueLayout.JAVA_INT)
             val arrOut = call.allocate(ValueLayout.ADDRESS)
             val ok = credEnumerate.invokeExact(filterSeg, FLAGS_NONE, countOut, arrOut) as Int
-            if (ok == 0) return@use emptyList<String>()
+            if (ok == 0) return@use emptyList<Listed>()
             val count = countOut.get(ValueLayout.JAVA_INT, 0)
             val arrPtr = arrOut.get(ValueLayout.ADDRESS, 0)
-            if (count <= 0 || arrPtr.address() == 0L) return@use emptyList<String>()
+            if (count <= 0 || arrPtr.address() == 0L) return@use emptyList<Listed>()
             val array = arrPtr.reinterpret((count.toLong()) * ValueLayout.ADDRESS.byteSize())
             try {
-                val out = ArrayList<String>(count)
+                val out = ArrayList<Listed>(count)
                 for (i in 0 until count) {
                     val credPtr = array.getAtIndex(ValueLayout.ADDRESS, i.toLong())
                     if (credPtr.address() == 0L) continue
                     val cred = credPtr.reinterpret(CREDENTIAL_LAYOUT.byteSize())
                     val targetPtr = cred.get(ValueLayout.ADDRESS, 8)
-                    if (targetPtr.address() != 0L) out += readUtf16(targetPtr)
+                    if (targetPtr.address() != 0L) out += Listed(readUtf16(targetPtr), userNameOf(cred))
                 }
                 out
             } finally {
@@ -136,6 +148,11 @@ internal class Win32Bindings private constructor(
                 credFree.invokeExact(credAddress) as Unit
             }
         }.getOrNull()
+    }
+
+    private fun userNameOf(cred: MemorySegment): String {
+        val ptr = cred.get(ValueLayout.ADDRESS, 72)
+        return if (ptr.address() != 0L) readUtf16(ptr) else ""
     }
 
     private fun readUtf16(ptr: MemorySegment): String =
