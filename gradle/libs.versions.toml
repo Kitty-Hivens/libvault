@@ -14,7 +14,7 @@ javaCoreTarget = "17"
 
 # Android Gradle Plugin, for libvault-android only. minSdk 26 is where
 # java.nio.file and java.time arrive, and core's public API uses both.
-agp               = "9.5.0"
+agp               = "9.5.1"
 androidCompileSdk = "36"
 androidMinSdk     = "26"
 
